@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tour Track</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div>
+          <p style="color:#7dd3fc; margin-bottom: 8px; letter-spacing: 0.08em; text-transform: uppercase;">Live tour intelligence</p>
+          <h1>Tour Track</h1>
+        </div>
+        <button id="refreshBtn" class="secondary" type="button">Refresh tour data</button>
+      </header>
+
+      <div id="statusBanner" class="status-banner" aria-live="polite">Ready</div>
+
+      <form class="toolbar" method="GET" action="/">
+        <div class="field">
+          <label for="q">Search</label>
+          <input id="q" name="q" type="text" value="{{.Query}}" placeholder="Artist or style" />
+        </div>
+
+        <div class="field">
+          <label for="style">Style</label>
+          <select id="style" name="style">
+            <option value="">All styles</option>
+            {{range .Styles}}
+              <option value="{{.}}" {{if eq $.Style .}}selected{{end}}>{{.}}</option>
+            {{end}}
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="year">Start year</label>
+          <select id="year" name="year">
+            <option value="">All years</option>
+            {{range .Years}}
+              <option value="{{.}}" {{if eq $.Year (printf "%d" .)}}selected{{end}}>{{.}}</option>
+            {{end}}
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="member">Member</label>
+          <input id="member" name="member" type="text" value="{{.Member}}" placeholder="Search member" />
+        </div>
+
+        <div class="field">
+          <label for="sort">Sort by</label>
+          <select id="sort" name="sort">
+            <option value="name" {{if eq .Sort "name"}}selected{{end}}>Name</option>
+            <option value="concerts" {{if eq .Sort "concerts"}}selected{{end}}>Concert count</option>
+            <option value="spread" {{if eq .Sort "spread"}}selected{{end}}>Tour spread</option>
+            <option value="year" {{if eq .Sort "year"}}selected{{end}}>Start year</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>View</label>
+          <div class="view-switcher">
+            <button type="button" class="view-btn {{if or (eq .View "") (eq .View "cards")}}active{{end}}" data-view="cards">Cards</button>
+            <button type="button" class="view-btn {{if eq .View "grid"}}active{{end}}" data-view="grid">Grid</button>
+            <button type="button" class="view-btn {{if eq .View "table"}}active{{end}}" data-view="table">Table</button>
+            <button type="button" class="view-btn {{if eq .View "list"}}active{{end}}" data-view="list">List</button>
+            <input type="hidden" id="viewMode" name="view" value="{{if .View}}{{.View}}{{else}}cards{{end}}" />
+          </div>
+        </div>
+
+        <input type="hidden" id="activityField" name="activity" value="{{.Activity}}" />
+
+        <div class="field" style="justify-content: flex-end;">
+          <button type="submit">Apply filters</button>
+        </div>
+      </form>
+
+      <div class="activity-switcher">
+        <button type="button" class="activity-pill {{if eq .Activity ""}}active{{end}}" data-activity="">All</button>
+        <button type="button" class="activity-pill {{if eq .Activity "Emerging"}}active{{end}}" data-activity="Emerging">Emerging</button>
+        <button type="button" class="activity-pill {{if eq .Activity "Active"}}active{{end}}" data-activity="Active">Active</button>
+        <button type="button" class="activity-pill {{if eq .Activity "Established"}}active{{end}}" data-activity="Established">Established</button>
+        <button type="button" class="activity-pill {{if eq .Activity "Legendary"}}active{{end}}" data-activity="Legendary">Legendary</button>
+        <button type="button" class="activity-pill {{if eq .Activity "Rising Star"}}active{{end}}" data-activity="Rising Star">Rising Star</button>
+      </div>
+
+      <main>
+        {{if eq .View "table"}}
+          <div class="table-wrap">
+            <table class="tour-table">
+              <thead>
+                <tr>
+                  <th>Artist</th>
+                  <th>Style</th>
+                  <th>Activity</th>
+                  <th>Concerts</th>
+                  <th>Countries</th>
+                  <th>Started</th>
+                </tr>
+              </thead>
+              <tbody>
+                {{range .Profiles}}
+                  <tr>
+                    <td><a href="/artist/{{.Artist.ID}}">{{.Artist.Name}}</a></td>
+                    <td>{{.Artist.Style}}</td>
+                    <td><span class="badge {{.ActivityLabel}}">{{.ActivityLabel}}</span>{{if .RisingStar}} <span class="badge Rising">Rising Star</span>{{end}}</td>
+                    <td>{{len .ConcertDates}}</td>
+                    <td>{{len .Countries}}</td>
+                    <td>{{.Artist.StartYear}}</td>
+                  </tr>
+                {{else}}
+                  <tr><td colspan="6">No artists match the selected filters.</td></tr>
+                {{end}}
+              </tbody>
+            </table>
+          </div>
+        {{else if eq .View "list"}}
+          <div class="list-view">
+            {{range .Profiles}}
+              <div class="list-item">
+                <div>
+                  <h3><a href="/artist/{{.Artist.ID}}">{{.Artist.Name}}</a></h3>
+                  <p>{{.Artist.Style}} • {{.Artist.StartYear}} • {{len .ConcertDates}} concerts</p>
+                </div>
+                <div class="badge-row">
+                  <span class="badge {{.ActivityLabel}}">{{.ActivityLabel}}</span>
+                  {{if .RisingStar}}<span class="badge Rising">Rising Star</span>{{end}}
+                </div>
+              </div>
+            {{else}}
+              <div class="card" style="padding: 24px; color: #0f172a;">No artists match the selected filters.</div>
+            {{end}}
+          </div>
+        {{else}}
+          <div class="grid">
+            {{range .Profiles}}
+              <article class="card">
+                <img src="{{.Artist.Image}}" alt="{{.Artist.Name}}" />
+                <div class="card-body">
+                  <div class="badge-row">
+                    <span class="badge {{.ActivityLabel}}">{{.ActivityLabel}}</span>
+                    {{if .RisingStar}}<span class="badge Rising">Rising Star</span>{{end}}
+                  </div>
+                  <h3><a href="/artist/{{.Artist.ID}}">{{.Artist.Name}}</a></h3>
+                  <p>{{.Artist.Style}}</p>
+                  <div class="meta">
+                    <span>Tour spread: {{len .Countries}}</span>
+                    <span>Score: {{.Score}}</span>
+                  </div>
+                  <div class="meta">
+                    <span>Start: {{.Artist.StartYear}}</span>
+                    <span>{{len .ConcertDates}} concerts</span>
+                  </div>
+                </div>
+              </article>
+            {{else}}
+              <div class="card" style="padding: 24px; color: #0f172a; grid-column: 1 / -1;">No artists match the selected filters.</div>
+            {{end}}
+          </div>
+        {{end}}
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
