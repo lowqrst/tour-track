@@ -1,11 +1,12 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
-	"fmt"
 	"html/template"
+	"io/fs"
+	"log"
 	"net/http"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,212 +19,206 @@ type Handler struct {
 	svc       *service.TourTrackService
 }
 
+type sourceViewData struct {
+	UpdatedAt string
+	Stale     bool
+	Demo      bool
+	Warning   string
+}
+
 type indexViewData struct {
-	Profiles []service.ArtistProfile
-	Styles   []string
-	Years    []int
-	Query    string
-	Style    string
-	Year     string
-	Member   string
-	Activity string
-	Sort     string
-	View     string
+	sourceViewData
+	Profiles       []service.ArtistProfile
+	Featured       *service.ArtistProfile
+	Years          []int
+	Countries      []string
+	Query          string
+	Country        string
+	Year           string
+	Member         string
+	Activity       string
+	Sort           string
+	View           string
+	TotalArtists   int
+	TotalConcerts  int
+	TotalCountries int
 }
 
 type artistViewData struct {
+	sourceViewData
 	Profile service.ArtistProfile
 }
 
-func New(svc *service.TourTrackService) (*Handler, error) {
-	tpl, err := template.ParseGlob(filepath.Join("templates", "*.html"))
+func New(svc *service.TourTrackService, files fs.FS) (*Handler, error) {
+	templates, err := template.ParseFS(files, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{templates: tpl, svc: svc}, nil
+	return &Handler{templates: templates, svc: svc}, nil
 }
 
 func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
-		h.renderError(w, http.StatusNotFound, "Page not found", "The requested page does not exist.")
+		h.renderError(w, http.StatusNotFound, "Page not found", "That page is off the setlist. Explore the artist directory instead.")
 		return
 	}
-
-	profiles, err := h.svc.Load()
+	if !h.allowRead(w, r) {
+		return
+	}
+	profiles, err := h.svc.LoadContext(r.Context())
 	if err != nil {
-		profiles = nil
+		log.Printf("load artists: %v", err)
+		h.renderError(w, http.StatusServiceUnavailable, "The stage is taking a break", "The artist API is unavailable. Please try again shortly.")
+		return
 	}
-
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	styleFilter := strings.TrimSpace(r.URL.Query().Get("style"))
-	yearFilter := strings.TrimSpace(r.URL.Query().Get("year"))
-	memberFilter := strings.TrimSpace(r.URL.Query().Get("member"))
-	activityFilter := strings.TrimSpace(r.URL.Query().Get("activity"))
-	sortFilter := strings.TrimSpace(r.URL.Query().Get("sort"))
-	viewFilter := strings.TrimSpace(r.URL.Query().Get("view"))
-	if sortFilter == "" {
-		sortFilter = "name"
+	params := r.URL.Query()
+	opts := service.FilterOptions{
+		Query:    strings.TrimSpace(params.Get("q")),
+		Country:  strings.TrimSpace(params.Get("country")),
+		Year:     strings.TrimSpace(params.Get("year")),
+		Member:   strings.TrimSpace(params.Get("member")),
+		Activity: strings.TrimSpace(params.Get("activity")),
+		Sort:     validChoice(params.Get("sort"), "name", "score", "concerts", "spread", "year"),
+		View:     validChoice(params.Get("view"), "cards", "list", "table"),
 	}
-	if viewFilter == "" {
-		viewFilter = "cards"
+	if opts.Year != "" {
+		if _, err := strconv.Atoi(opts.Year); err != nil {
+			h.renderError(w, http.StatusBadRequest, "Check the year", "Use a whole year, such as 1970.")
+			return
+		}
 	}
-
-	filtered := service.FilterAndSortProfiles(profiles, service.FilterOptions{
-		Query:    query,
-		Style:    styleFilter,
-		Year:     yearFilter,
-		Member:   memberFilter,
-		Activity: activityFilter,
-		Sort:     sortFilter,
-		View:     viewFilter,
-	})
-	styles := uniqueStyles(profiles)
-	years := uniqueYears(profiles)
-
-	pageData := indexViewData{
-		Profiles: filtered,
-		Styles:   styles,
-		Years:    years,
-		Query:    query,
-		Style:    styleFilter,
-		Year:     yearFilter,
-		Member:   memberFilter,
-		Activity: activityFilter,
-		Sort:     sortFilter,
-		View:     viewFilter,
+	data := indexViewData{
+		sourceViewData: h.sourceData(),
+		Profiles:       service.FilterAndSortProfiles(profiles, opts),
+		Query:          opts.Query, Country: opts.Country, Year: opts.Year,
+		Member: opts.Member, Activity: opts.Activity, Sort: opts.Sort, View: opts.View,
+		TotalArtists: len(profiles),
 	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.templates.ExecuteTemplate(w, "index.html", pageData); err != nil {
-		h.renderError(w, http.StatusInternalServerError, "Template error", err.Error())
+	years := make(map[int]struct{})
+	countries := make(map[string]struct{})
+	for i := range profiles {
+		profile := &profiles[i]
+		years[profile.Artist.StartYear] = struct{}{}
+		data.TotalConcerts += len(profile.ConcertDates)
+		for _, country := range profile.Countries {
+			countries[country] = struct{}{}
+		}
+		if data.Featured == nil || profile.Score > data.Featured.Score {
+			data.Featured = profile
+		}
 	}
+	for year := range years {
+		data.Years = append(data.Years, year)
+	}
+	for country := range countries {
+		data.Countries = append(data.Countries, country)
+	}
+	sort.Ints(data.Years)
+	sort.Strings(data.Countries)
+	data.TotalCountries = len(countries)
+	h.render(w, http.StatusOK, "index.html", data)
 }
 
 func (h *Handler) Artist(w http.ResponseWriter, r *http.Request) {
+	if !h.allowRead(w, r) {
+		return
+	}
 	id := strings.TrimPrefix(r.URL.Path, "/artist/")
-	if id == "" || id == "/" {
-		h.renderError(w, http.StatusNotFound, "Artist not found", "The requested artist could not be found.")
+	artistID, err := strconv.Atoi(id)
+	if err != nil || artistID <= 0 || strconv.Itoa(artistID) != id {
+		h.artistNotFound(w)
 		return
 	}
-
-	profile, ok := h.svc.GetArtistByID(id)
-	if !ok {
-		h.renderError(w, http.StatusNotFound, "Artist not found", "The requested artist could not be found.")
+	profile, found, err := h.svc.ArtistContext(r.Context(), id)
+	if err != nil {
+		log.Printf("load artist %s: %v", id, err)
+		h.renderError(w, http.StatusServiceUnavailable, "The stage is taking a break", "The artist API is unavailable. Please try again shortly.")
 		return
 	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.templates.ExecuteTemplate(w, "artist.html", artistViewData{Profile: profile}); err != nil {
-		h.renderError(w, http.StatusInternalServerError, "Template error", err.Error())
+	if !found {
+		h.artistNotFound(w)
+		return
 	}
+	h.render(w, http.StatusOK, "artist.html", artistViewData{sourceViewData: h.sourceData(), Profile: profile})
 }
 
 func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		h.renderError(w, http.StatusMethodNotAllowed, "Method not allowed", "Only GET and POST are supported for this endpoint.")
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		h.writeJSON(w, http.StatusMethodNotAllowed, "error", "Use POST to refresh the artist directory.")
 		return
 	}
+	// Reject cross-site browser writes while allowing non-browser API clients.
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		h.writeJSON(w, http.StatusForbidden, "error", "Refresh the directory from the Tour Track website.")
+		return
+	}
+	if err := h.svc.Refresh(r.Context()); err != nil {
+		log.Printf("refresh artists: %v", err)
+		h.writeJSON(w, http.StatusBadGateway, "error", "The API could not be refreshed. Any previously loaded data is still available.")
+		return
+	}
+	h.writeJSON(w, http.StatusOK, "ok", "Artist directory refreshed.")
+}
 
-	result := <-h.svc.TriggerRefreshAsync()
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": result})
+func (h *Handler) sourceData() sourceViewData {
+	status := h.svc.Status()
+	updated := ""
+	if !status.UpdatedAt.IsZero() {
+		updated = status.UpdatedAt.UTC().Format("02 Jan 2006, 15:04 UTC")
+	}
+	return sourceViewData{UpdatedAt: updated, Stale: status.Stale, Demo: status.Source == "demo", Warning: status.Message}
+}
+
+func (h *Handler) allowRead(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return true
+	}
+	w.Header().Set("Allow", "GET, HEAD")
+	h.renderError(w, http.StatusMethodNotAllowed, "Method not allowed", "This page supports GET and HEAD requests.")
+	return false
+}
+
+func (h *Handler) artistNotFound(w http.ResponseWriter) {
+	h.renderError(w, http.StatusNotFound, "Artist not found", "We could not find that artist. Discover someone else in the directory.")
 }
 
 func (h *Handler) renderError(w http.ResponseWriter, status int, title, message string) {
+	h.render(w, status, "error.html", struct {
+		Status         int
+		Title, Message string
+	}{status, title, message})
+}
+
+func (h *Handler) render(w http.ResponseWriter, status int, name string, data any) {
+	// Buffer templates so rendering failures cannot send a partial success page.
+	var page bytes.Buffer
+	if err := h.templates.ExecuteTemplate(&page, name, data); err != nil {
+		log.Printf("render %s: %v", name, err)
+		http.Error(w, "This page is temporarily unavailable. Please try again.", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if status == http.StatusServiceUnavailable {
+		w.Header().Set("Retry-After", "60")
+	}
 	w.WriteHeader(status)
-	if err := h.templates.ExecuteTemplate(w, "error.html", struct {
-		Status  int
-		Title   string
-		Message string
-	}{
-		Status:  status,
-		Title:   title,
-		Message: message,
-	}); err != nil {
-		http.Error(w, message, status)
-	}
+	_, _ = w.Write(page.Bytes())
 }
 
-func filterProfiles(profiles []service.ArtistProfile, query, style, year, member, activity string) []service.ArtistProfile {
-	filtered := make([]service.ArtistProfile, 0, len(profiles))
-	for _, profile := range profiles {
-		artist := profile.Artist
-		if query != "" {
-			needle := strings.ToLower(query)
-			if !strings.Contains(strings.ToLower(artist.Name), needle) && !strings.Contains(strings.ToLower(artist.Style), needle) {
-				continue
-			}
-		}
-		if style != "" && !strings.EqualFold(artist.Style, style) {
-			continue
-		}
-		if year != "" {
-			wantYear, err := strconv.Atoi(year)
-			if err == nil && artist.StartYear != wantYear {
-				continue
-			}
-		}
-		if member != "" {
-			needle := strings.ToLower(member)
-			matched := false
-			for _, person := range artist.Members {
-				if strings.Contains(strings.ToLower(person), needle) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
-		}
-		if activity != "" && !strings.EqualFold(profile.ActivityLabel, activity) {
-			continue
-		}
-		filtered = append(filtered, profile)
-	}
-	return filtered
+func (h *Handler) writeJSON(w http.ResponseWriter, code int, status, message string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": status, "message": message})
 }
 
-func uniqueStyles(profiles []service.ArtistProfile) []string {
-	styles := make([]string, 0)
-	seen := map[string]struct{}{}
-	for _, profile := range profiles {
-		style := profile.Artist.Style
-		if style == "" {
-			continue
+func validChoice(value string, choices ...string) string {
+	for _, choice := range choices {
+		if value == choice {
+			return choice
 		}
-		if _, ok := seen[style]; ok {
-			continue
-		}
-		seen[style] = struct{}{}
-		styles = append(styles, style)
 	}
-	sort.Strings(styles)
-	return styles
-}
-
-func uniqueYears(profiles []service.ArtistProfile) []int {
-	years := make([]int, 0)
-	seen := map[int]struct{}{}
-	for _, profile := range profiles {
-		if profile.Artist.StartYear == 0 {
-			continue
-		}
-		if _, ok := seen[profile.Artist.StartYear]; ok {
-			continue
-		}
-		seen[profile.Artist.StartYear] = struct{}{}
-		years = append(years, profile.Artist.StartYear)
-	}
-	sort.Ints(years)
-	return years
-}
-
-func (h *Handler) maybeReadTemplate(name string) string {
-	if h == nil || h.templates == nil {
-		return ""
-	}
-	return fmt.Sprintf("template %q is loaded", name)
+	return choices[0]
 }

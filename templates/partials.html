@@ -1,0 +1,44 @@
+{{define "brand"}}
+  <a class="brand"
+    href="/" aria-label="Tour Track home"><svg viewBox="0 0 28 28" width="28" height="28" aria-hidden="true"><path d="M3 10v8m5-13v18m6-20v24m6-19v14m5-11v8" fill="none" stroke="currentColor" stroke-width="3"/></svg><span>tour<span class="brand-light">track</span><span class="brand-dot" aria-hidden="true">✳</span></span></a>
+{{end}}
+{{define "header"}}
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="shell header-inner">
+      {{template "brand"}}
+      <nav aria-label="Main navigation">
+        <a href="/#artists">The artists</a>
+        <a href="/#how-it-works">Behind the score <span aria-hidden="true">↗</span></a>
+      </nav>
+      <span class="header-label"><span class="status-dot"></span> The music. The movement.</span>
+    </div>
+  </header>
+{{end}}
+{{define "footer"}}
+  <footer class="site-footer shell">
+    <div>
+      {{template "brand"}}
+      <p>A little closer to the artists. A little further around the world.</p>
+    </div>
+    <div class="footer-note">
+      <p>Built with Go. Powered by Groupie Trackers.</p>
+      <p>Concert listings are an API archive, not a live ticket service.</p>
+      <a href="https://groupietrackers.01edu.ai/" target="_blank" rel="noopener noreferrer">Explore the source API <span aria-hidden="true">↗</span></a>
+    </div>
+  </footer>
+{{end}}
+{{define "badges"}}
+  <span class="badge {{.ActivityLabel}}"><span class="badge-dot" aria-hidden="true"></span>{{.ActivityLabel}}</span>
+  {{if .RisingStar}}
+    <span class="badge Rising">↗ Rising Star</span>
+  {{end}}
+{{end}}
+{{define "warning"}}
+  {{if .Warning}}
+    <div class="notice" role="status">
+      <span aria-hidden="true">↳</span>
+      <p>{{.Warning}}</p>
+    </div>
+  {{end}}
+{{end}}

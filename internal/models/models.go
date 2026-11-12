@@ -1,44 +1,39 @@
 package models
 
-// Artist represents a musician or band profile.
+// Artist contains the fields supplied by the public artists endpoint.
 type Artist struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Image          string   `json:"image"`
-	StartYear      int      `json:"start_year"`
-	FirstAlbumDate string   `json:"first_album_date"`
-	Members        []string `json:"members"`
-	Style          string   `json:"style"`
+	ID             string
+	Name           string
+	Image          string
+	StartYear      int
+	FirstAlbumDate string
+	Members        []string
 }
 
-// Location describes a concert venue in a specific city/country.
+// Location retains the original city-country token from the locations endpoint.
 type Location struct {
-	ID       string `json:"id"`
-	ArtistID string `json:"artist_id"`
-	Venue    string `json:"venue"`
-	City     string `json:"city"`
-	Country  string `json:"country"`
-	Date     string `json:"date"`
+	ArtistID string
+	Name     string
 }
 
-// ConcertDate stores a concert occurrence for an artist.
+// ConcertDate preserves both the API value and its normalized date text.
 type ConcertDate struct {
-	ID       string `json:"id"`
-	ArtistID string `json:"artist_id"`
-	Date     string `json:"date"`
+	ArtistID string
+	Date     string
+	RawDate  string
 }
 
-// Relation links an artist, concert date, and venue/location together.
+// Relation links one artist's concert dates to a location.
 type Relation struct {
-	ArtistID   string `json:"artist_id"`
-	DateID     string `json:"date_id"`
-	LocationID string `json:"location_id"`
+	ArtistID string
+	Location string
+	Dates    []string
 }
 
-// APIResponse wraps all data returned by the external REST API.
+// APIResponse is a complete, immutable snapshot of all four API endpoints.
 type APIResponse struct {
-	Artists   []Artist      `json:"artists"`
-	Locations []Location    `json:"locations"`
-	Dates     []ConcertDate `json:"dates"`
-	Relations []Relation    `json:"relations"`
+	Artists   []Artist
+	Locations []Location
+	Dates     []ConcertDate
+	Relations []Relation
 }

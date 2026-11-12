@@ -1,292 +1,386 @@
 package service
 
 import (
-	"fmt"
+	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	"tour-track/internal/activity"
 	"tour-track/internal/api"
 	"tour-track/internal/models"
 )
 
-// EventBus provides a lightweight async event channel for UI refreshes and notifications.
-type EventBus struct {
-	events chan string
-}
-
-func NewEventBus() *EventBus {
-	return &EventBus{events: make(chan string, 32)}
-}
-
-func (b *EventBus) Publish(message string) {
-	if b == nil || b.events == nil {
-		return
-	}
-	go func() {
-		b.events <- message
-	}()
-}
-
-func (b *EventBus) Subscribe() <-chan string {
-	if b == nil {
-		return nil
-	}
-	return b.events
-}
+const (
+	cacheLifetime = 5 * time.Minute
+	retryDelay    = 30 * time.Second
+)
 
 type ConcertEvent struct {
-	Date    string
-	Venue   string
-	City    string
-	Country string
+	Date     string
+	DateISO  string
+	City     string
+	Country  string
+	Location string
+	Upcoming bool
 }
 
 type FilterOptions struct {
 	Query    string
-	Style    string
 	Year     string
 	Member   string
+	Country  string
 	Activity string
 	Sort     string
 	View     string
 }
 
-// ArtistProfile contains enriched artist data with activity scoring.
+// ArtistProfile is rebuilt at request time from the cached, unscored snapshot.
 type ArtistProfile struct {
 	Artist        models.Artist
 	Countries     []string
 	ConcertDates  []models.ConcertDate
 	ConcertEvents []ConcertEvent
+	CareerYears   int
+	CareerBonus   int
 	Score         int
 	ActivityLabel string
 	RisingStar    bool
 }
 
-// TourTrackService coordinates external API access and activity classification.
+type DataStatus struct {
+	Source    string
+	UpdatedAt time.Time
+	Stale     bool
+	Message   string
+}
+
+// TourTrackService protects its raw snapshot and refresh state with one mutex.
+// A refresh publishes only a complete snapshot, so readers cannot see half an update.
 type TourTrackService struct {
-	client   *api.Client
-	profiles []ArtistProfile
-	events   *EventBus
+	client      *api.Client
+	mu          sync.Mutex
+	snapshot    models.APIResponse
+	status      DataStatus
+	nextAttempt time.Time
 }
 
 func NewTourTrackService(baseURL string) *TourTrackService {
-	service := &TourTrackService{
-		client: api.NewClient(baseURL),
-		events: NewEventBus(),
+	return &TourTrackService{client: api.NewClient(baseURL), status: DataStatus{Source: "live"}}
+}
+
+func NewDemoService() (*TourTrackService, error) {
+	snapshot, err := api.LoadDemo()
+	if err != nil {
+		return nil, err
 	}
-	service.events.Publish("tour-track booted")
-	return service
+	return &TourTrackService{
+		snapshot: snapshot,
+		status: DataStatus{
+			Source:    "demo",
+			UpdatedAt: time.Date(2026, time.November, 12, 0, 0, 0, 0, time.UTC),
+			Message:   "Offline demo · API snapshot captured 12 November 2026. Concert listings may be historical.",
+		},
+	}, nil
 }
 
 func (s *TourTrackService) Load() ([]ArtistProfile, error) {
-	profiles, err := s.buildProfiles()
-	if err != nil {
-		return nil, err
-	}
-	s.profiles = profiles
-	return profiles, nil
+	return s.LoadContext(context.Background())
 }
 
-func (s *TourTrackService) GetArtistByID(id string) (ArtistProfile, bool) {
-	if len(s.profiles) == 0 {
-		profiles, err := s.Load()
-		if err != nil {
-			return ArtistProfile{}, false
-		}
-		s.profiles = profiles
+func (s *TourTrackService) LoadContext(ctx context.Context) ([]ArtistProfile, error) {
+	s.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		return nil, err
 	}
-	for _, profile := range s.profiles {
+	now := time.Now()
+	if s.status.Source != "demo" && (len(s.snapshot.Artists) == 0 || now.Sub(s.status.UpdatedAt) >= cacheLifetime) && !now.Before(s.nextAttempt) {
+		if err := s.refreshLocked(ctx); err != nil && len(s.snapshot.Artists) == 0 {
+			s.mu.Unlock()
+			return nil, err
+		}
+	}
+	if len(s.snapshot.Artists) == 0 {
+		// No snapshot exists after a recent failed load; preserve backoff without
+		// pretending the empty state is a successful response.
+		s.mu.Unlock()
+		return nil, ErrUnavailable
+	}
+	snapshot := s.snapshot
+	s.mu.Unlock()
+	return buildProfiles(snapshot, time.Now()), nil
+}
+
+// ErrUnavailable represents a failed initial load while the API retry is delayed.
+var ErrUnavailable = errors.New("artist API temporarily unavailable")
+
+func (s *TourTrackService) ArtistContext(ctx context.Context, id string) (ArtistProfile, bool, error) {
+	profiles, err := s.LoadContext(ctx)
+	if err != nil {
+		return ArtistProfile{}, false, err
+	}
+	for _, profile := range profiles {
 		if profile.Artist.ID == id {
-			return profile, true
+			return profile, true, nil
 		}
 	}
-	return ArtistProfile{}, false
+	return ArtistProfile{}, false, nil
 }
 
-func (s *TourTrackService) TriggerRefreshAsync() <-chan string {
-	result := make(chan string, 1)
-	go func() {
-		defer close(result)
-		s.events.Publish("refresh started")
-		time.Sleep(300 * time.Millisecond)
-		profiles, err := s.buildProfiles()
-		if err != nil {
-			message := fmt.Sprintf("refresh failed: %v", err)
-			s.events.Publish(message)
-			result <- message
-			return
-		}
-		s.profiles = profiles
-		message := fmt.Sprintf("updated %d artists", len(profiles))
-		s.events.Publish(message)
-		result <- message
-	}()
-	return result
+func (s *TourTrackService) Refresh(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.status.Source == "demo" {
+		return nil
+	}
+	return s.refreshLocked(ctx)
 }
 
-func (s *TourTrackService) buildProfiles() ([]ArtistProfile, error) {
-	response, err := s.client.FetchAll()
+func (s *TourTrackService) refreshLocked(ctx context.Context) error {
+	snapshot, err := s.client.FetchAllContext(ctx)
 	if err != nil {
-		return nil, err
-	}
-
-	locationByID := make(map[string]models.Location, len(response.Locations))
-	for _, location := range response.Locations {
-		locationByID[location.ID] = location
-	}
-
-	dateToLocationIDs := make(map[string][]string)
-	for _, relation := range response.Relations {
-		dateToLocationIDs[relation.DateID] = append(dateToLocationIDs[relation.DateID], relation.LocationID)
-	}
-
-	datesByArtist := make(map[string][]models.ConcertDate)
-	for _, date := range response.Dates {
-		datesByArtist[date.ArtistID] = append(datesByArtist[date.ArtistID], date)
-	}
-
-	countriesByArtist := make(map[string]map[string]struct{})
-	for _, location := range response.Locations {
-		if countriesByArtist[location.ArtistID] == nil {
-			countriesByArtist[location.ArtistID] = map[string]struct{}{}
+		s.nextAttempt = time.Now().Add(retryDelay)
+		s.status.Stale = len(s.snapshot.Artists) > 0
+		s.status.Message = "The artist API is temporarily unavailable. Please try again shortly."
+		if s.status.Stale {
+			s.status.Message = "The API is unavailable. Showing the last successfully loaded data."
 		}
-		countriesByArtist[location.ArtistID][location.Country] = struct{}{}
+		return err
 	}
+	s.snapshot = snapshot
+	s.status = DataStatus{Source: "live", UpdatedAt: time.Now()}
+	s.nextAttempt = time.Time{}
+	return nil
+}
 
-	profiles := make([]ArtistProfile, 0, len(response.Artists))
-	for _, artist := range response.Artists {
-		concertDates := datesByArtist[artist.ID]
-		countries := make([]string, 0, len(countriesByArtist[artist.ID]))
-		for country := range countriesByArtist[artist.ID] {
-			countries = append(countries, country)
-		}
-		sort.Strings(countries)
+func (s *TourTrackService) Status() DataStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.status
+}
 
-		concertEvents := make([]ConcertEvent, 0, len(concertDates))
-		seenDates := map[string]struct{}{}
-		for _, concert := range concertDates {
-			if _, ok := seenDates[concert.Date]; ok {
-				continue
-			}
-			seenDates[concert.Date] = struct{}{}
-			for _, locationID := range dateToLocationIDs[concert.ID] {
-				location, ok := locationByID[locationID]
-				if !ok {
-					continue
-				}
-				concertEvents = append(concertEvents, ConcertEvent{
-					Date:    concert.Date,
-					Venue:   location.Venue,
-					City:    location.City,
-					Country: location.Country,
-				})
-			}
-			if len(dateToLocationIDs[concert.ID]) == 0 {
-				concertEvents = append(concertEvents, ConcertEvent{Date: concert.Date})
+func buildProfiles(snapshot models.APIResponse, now time.Time) []ArtistProfile {
+	locations := make(map[string][]models.Location)
+	for _, location := range snapshot.Locations {
+		locations[location.ArtistID] = append(locations[location.ArtistID], location)
+	}
+	dates := make(map[string][]models.ConcertDate)
+	for _, date := range snapshot.Dates {
+		// Each listed date is one input concert. Repeated dates remain listed
+		// because two shows can share a day; relation is not added to this count.
+		dates[date.ArtistID] = append(dates[date.ArtistID], date)
+	}
+	relations := make(map[string][]models.Relation)
+	for _, relation := range snapshot.Relations {
+		relations[relation.ArtistID] = append(relations[relation.ArtistID], relation)
+	}
+	profiles := make([]ArtistProfile, 0, len(snapshot.Artists))
+	for _, artist := range snapshot.Artists {
+		artist.Members = append([]string(nil), artist.Members...)
+		countries := make(map[string]bool)
+		for _, location := range locations[artist.ID] {
+			_, country := splitLocation(location.Name)
+			if country != "" {
+				countries[country] = true
 			}
 		}
-
-		careerYears := time.Now().Year() - artist.StartYear
-		if careerYears < 0 {
-			careerYears = 0
+		countryList := make([]string, 0, len(countries))
+		for country := range countries {
+			countryList = append(countryList, country)
 		}
-
-		score := activity.CalculateScore(len(countries), len(concertDates), careerYears)
-		label := activity.ClassifyActivity(len(countries), len(concertDates), careerYears)
-		recentConcerts := countRecentConcerts(concertDates, 2)
-		rising := activity.IsRisingStar(recentConcerts, len(concertDates), careerYears)
-
+		sort.Strings(countryList)
+		concertDates := append([]models.ConcertDate(nil), dates[artist.ID]...)
+		careerYears := max(0, now.Year()-artist.StartYear)
 		profiles = append(profiles, ArtistProfile{
-			Artist:        artist,
-			Countries:     countries,
-			ConcertDates:  concertDates,
-			ConcertEvents: concertEvents,
-			Score:         score,
-			ActivityLabel: label,
-			RisingStar:    rising,
+			Artist: artist, Countries: countryList, ConcertDates: concertDates,
+			ConcertEvents: makeEvents(relations[artist.ID], now),
+			CareerYears:   careerYears, CareerBonus: min(10, careerYears/5),
+			Score:         activity.CalculateScore(len(countryList), len(concertDates), careerYears),
+			ActivityLabel: activity.ClassifyActivity(len(countryList), len(concertDates), careerYears),
+			RisingStar:    activity.IsRisingStar(countRecentConcerts(concertDates, now), len(concertDates), careerYears),
 		})
 	}
-
-	sort.Slice(profiles, func(i, j int) bool {
-		return strings.ToLower(profiles[i].Artist.Name) < strings.ToLower(profiles[j].Artist.Name)
-	})
-	return profiles, nil
+	sort.Slice(profiles, func(i, j int) bool { return profileLess(profiles[i], profiles[j]) })
+	return profiles
 }
 
-func countRecentConcerts(dates []models.ConcertDate, recentYears int) int {
-	if len(dates) == 0 {
-		return 0
+func makeEvents(relations []models.Relation, now time.Time) []ConcertEvent {
+	events := make([]ConcertEvent, 0)
+	today := dateOnly(now)
+	for _, relation := range relations {
+		city, country := splitLocation(relation.Location)
+		for _, raw := range relation.Dates {
+			date := api.NormalizeDate(raw)
+			event := ConcertEvent{Date: date, City: city, Country: country, Location: relation.Location}
+			if parsed, err := time.Parse("02-01-2006", date); err == nil {
+				event.Date = parsed.Format("02 Jan 2006")
+				event.DateISO = parsed.Format("2006-01-02")
+				event.Upcoming = !parsed.Before(today)
+			}
+			events = append(events, event)
+		}
 	}
-	currentYear := time.Now().Year()
-	cutoffYear := currentYear - recentYears
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].DateISO != events[j].DateISO {
+			if events[i].DateISO == "" {
+				return false
+			}
+			if events[j].DateISO == "" {
+				return true
+			}
+			return events[i].DateISO < events[j].DateISO
+		}
+		return events[i].Location < events[j].Location
+	})
+	return events
+}
+
+func countRecentConcerts(dates []models.ConcertDate, now time.Time) int {
+	// Dates have no time zone or time-of-day. Use an inclusive rolling two-year
+	// calendar-date window and exclude future and malformed entries.
+	end := dateOnly(now)
+	start := end.AddDate(-2, 0, 0)
 	count := 0
 	for _, date := range dates {
-		parsed, err := time.Parse("2006-01-02", date.Date)
-		if err != nil {
-			continue
-		}
-		if parsed.Year() >= cutoffYear {
+		parsed, err := time.Parse("02-01-2006", api.NormalizeDate(date.Date))
+		if err == nil && !parsed.Before(start) && !parsed.After(end) {
 			count++
 		}
 	}
 	return count
 }
 
-func FilterAndSortProfiles(profiles []ArtistProfile, opts FilterOptions) []ArtistProfile {
+func dateOnly(value time.Time) time.Time {
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func splitLocation(location string) (string, string) {
+	separator := strings.LastIndex(location, "-")
+	if separator <= 0 || separator == len(location)-1 {
+		return readable(location), ""
+	}
+	city := readable(location[:separator])
+	country := strings.ToLower(strings.TrimSpace(location[separator+1:]))
+	switch country {
+	case "us", "usa", "united_states", "united_states_of_america":
+		return city, "United States"
+	case "uk", "united_kingdom":
+		return city, "United Kingdom"
+	case "brasil", "brazil":
+		return city, "Brazil"
+	case "philippine", "philippines":
+		return city, "Philippines"
+	case "korea", "south_korea":
+		return city, "South Korea"
+	default:
+		return city, readable(country)
+	}
+}
+
+func readable(value string) string {
+	words := strings.Fields(strings.ReplaceAll(value, "_", " "))
+	for index, word := range words {
+		letters := []rune(strings.ToLower(word))
+		if len(letters) > 0 {
+			letters[0] = unicode.ToUpper(letters[0])
+		}
+		words[index] = string(letters)
+	}
+	return strings.Join(words, " ")
+}
+
+func FilterAndSortProfiles(profiles []ArtistProfile, options FilterOptions) []ArtistProfile {
 	filtered := make([]ArtistProfile, 0, len(profiles))
 	for _, profile := range profiles {
 		artist := profile.Artist
-		if opts.Query != "" {
-			needle := strings.ToLower(opts.Query)
-			if !strings.Contains(strings.ToLower(artist.Name), needle) && !strings.Contains(strings.ToLower(artist.Style), needle) {
-				continue
-			}
-		}
-		if opts.Style != "" && !strings.EqualFold(artist.Style, opts.Style) {
+		if options.Query != "" && !matchesQuery(profile, options.Query) {
 			continue
 		}
-		if opts.Year != "" {
-			wantYear, err := strconv.Atoi(opts.Year)
-			if err == nil && artist.StartYear != wantYear {
-				continue
-			}
+		if options.Year != "" && strconv.Itoa(artist.StartYear) != options.Year {
+			continue
 		}
-		if opts.Member != "" {
-			needle := strings.ToLower(opts.Member)
-			matched := false
-			for _, person := range artist.Members {
-				if strings.Contains(strings.ToLower(person), needle) {
-					matched = true
-					break
+		if options.Member != "" && !containsText(artist.Members, options.Member) {
+			continue
+		}
+		if options.Country != "" && !containsCountry(profile.Countries, options.Country) {
+			continue
+		}
+		if options.Activity != "" {
+			if strings.EqualFold(options.Activity, "Rising Star") {
+				if !profile.RisingStar {
+					continue
 				}
-			}
-			if !matched {
+			} else if !strings.EqualFold(profile.ActivityLabel, options.Activity) {
 				continue
 			}
-		}
-		if opts.Activity != "" && !strings.EqualFold(profile.ActivityLabel, opts.Activity) {
-			continue
 		}
 		filtered = append(filtered, profile)
 	}
-
-	sortKey := strings.TrimSpace(strings.ToLower(opts.Sort))
-	switch sortKey {
-	case "concerts":
-		sort.Slice(filtered, func(i, j int) bool { return len(filtered[i].ConcertDates) > len(filtered[j].ConcertDates) })
-	case "spread":
-		sort.Slice(filtered, func(i, j int) bool { return len(filtered[i].Countries) > len(filtered[j].Countries) })
-	case "year":
-		sort.Slice(filtered, func(i, j int) bool { return filtered[i].Artist.StartYear > filtered[j].Artist.StartYear })
-	case "name":
-		fallthrough
-	default:
-		sort.Slice(filtered, func(i, j int) bool {
-			return strings.ToLower(filtered[i].Artist.Name) < strings.ToLower(filtered[j].Artist.Name)
-		})
-	}
+	sort.Slice(filtered, func(i, j int) bool {
+		a, b := filtered[i], filtered[j]
+		switch options.Sort {
+		case "concerts":
+			if len(a.ConcertDates) != len(b.ConcertDates) {
+				return len(a.ConcertDates) > len(b.ConcertDates)
+			}
+		case "spread":
+			if len(a.Countries) != len(b.Countries) {
+				return len(a.Countries) > len(b.Countries)
+			}
+		case "year":
+			if a.Artist.StartYear != b.Artist.StartYear {
+				return a.Artist.StartYear > b.Artist.StartYear
+			}
+		case "score":
+			if a.Score != b.Score {
+				return a.Score > b.Score
+			}
+		}
+		return profileLess(a, b)
+	})
 	return filtered
+}
+
+func matchesQuery(profile ArtistProfile, query string) bool {
+	texts := append([]string{profile.Artist.Name, strconv.Itoa(profile.Artist.StartYear), profile.Artist.FirstAlbumDate}, profile.Artist.Members...)
+	texts = append(texts, profile.Countries...)
+	for _, event := range profile.ConcertEvents {
+		texts = append(texts, event.City, event.Country)
+	}
+	return containsText(texts, query)
+}
+
+func containsText(values []string, needle string) bool {
+	needle = strings.ToLower(strings.TrimSpace(needle))
+	for _, value := range values {
+		if strings.Contains(strings.ToLower(value), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCountry(countries []string, country string) bool {
+	for _, candidate := range countries {
+		if strings.EqualFold(candidate, country) {
+			return true
+		}
+	}
+	return false
+}
+
+func profileLess(a, b ArtistProfile) bool {
+	left, right := strings.ToLower(a.Artist.Name), strings.ToLower(b.Artist.Name)
+	if left == right {
+		return a.Artist.ID < b.Artist.ID
+	}
+	return left < right
 }

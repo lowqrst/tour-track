@@ -2,13 +2,15 @@ package main
 
 import (
 	"context"
+	"embed"
 	"errors"
-	"html/template"
+	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"tour-track/internal/api"
@@ -16,115 +18,106 @@ import (
 	"tour-track/internal/service"
 )
 
+//go:embed templates/*.html static/*
+var assets embed.FS
+
 func main() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("recovered from panic: %v", r)
-		}
-	}()
-
-	errorTemplate, err := template.ParseFiles(filepath.Join("templates", "error.html"))
-	if err != nil {
-		log.Printf("failed to load error template: %v", err)
-		errorTemplate = template.Must(template.New("error.html").Parse(`<!doctype html><html><body><h1>{{.Status}}</h1><p>{{.Message}}</p></body></html>`))
-	}
-
-	baseURL := os.Getenv("TOUR_TRACK_API_URL")
-	if baseURL == "" {
-		baseURL = "http://localhost:8081/api"
-		log.Println("TOUR_TRACK_API_URL is not set; starting the built-in mock API on :8081")
-		mockServer := api.StartMockAPIServer()
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			if err := mockServer.Shutdown(ctx); err != nil {
-				log.Printf("failed to shut down mock API server: %v", err)
-			}
-		}()
-	} else if strings.HasPrefix(baseURL, "http://localhost:8081/api") || strings.HasPrefix(baseURL, "http://127.0.0.1:8081/api") {
-		log.Println("Using local mock API on :8081")
-		mockServer := api.StartMockAPIServer()
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			if err := mockServer.Shutdown(ctx); err != nil {
-				log.Printf("failed to shut down mock API server: %v", err)
-			}
-		}()
-	}
-
-	svc := service.NewTourTrackService(baseURL)
-	h, err := handlers.New(svc)
-	if err != nil {
-		log.Printf("failed to initialize handlers: %v", err)
-		h = nil
-	}
-
-	mux := http.NewServeMux()
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	if h != nil {
-		mux.HandleFunc("/api/refresh", h.Refresh)
-		mux.HandleFunc("/artist/", h.Artist)
-		mux.HandleFunc("/", h.Index)
-	} else {
-		mux.HandleFunc("/api/refresh", func(w http.ResponseWriter, r *http.Request) {
-			renderErrorPage(w, http.StatusServiceUnavailable, "Service unavailable", "The application is temporarily unavailable.", errorTemplate)
-		})
-		mux.HandleFunc("/artist/", func(w http.ResponseWriter, r *http.Request) {
-			renderErrorPage(w, http.StatusServiceUnavailable, "Service unavailable", "The application is temporarily unavailable.", errorTemplate)
-		})
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			renderErrorPage(w, http.StatusServiceUnavailable, "Service unavailable", "The application is temporarily unavailable.", errorTemplate)
-		})
-	}
-
-	server := &http.Server{
-		Addr:              ":8080",
-		Handler:           recoverMiddleware(mux, errorTemplate),
-		ReadHeaderTimeout: 3 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       30 * time.Second,
-	}
-
-	log.Println("Tour Track server listening on :8080")
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Printf("server error: %v", err)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx); err != nil {
+		log.Printf("Tour Track: %v", err)
+		os.Exit(1)
 	}
 }
 
-func recoverMiddleware(next http.Handler, errorTemplate *template.Template) http.Handler {
+func run(ctx context.Context) error {
+	baseURL := os.Getenv("TOUR_TRACK_API_URL")
+	if baseURL == "" {
+		baseURL = api.DefaultBaseURL
+	}
+	svc := service.NewTourTrackService(baseURL)
+	if os.Getenv("TOUR_TRACK_DEMO") == "1" {
+		var err error
+		svc, err = service.NewDemoService()
+		if err != nil {
+			return fmt.Errorf("load demo snapshot: %w", err)
+		}
+		log.Print("Demo mode: using the supplied API snapshot from 2026-11-12")
+	}
+	handler, err := newApplication(svc)
+	if err != nil {
+		return err
+	}
+	addr := os.Getenv("TOUR_TRACK_ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+	server := &http.Server{
+		Addr: addr, Handler: handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      20 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	stopped := make(chan struct{})
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		select {
+		case <-ctx.Done():
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := server.Shutdown(shutdownCtx); err != nil {
+				log.Printf("shutdown: %v", err)
+				_ = server.Close()
+			}
+		case <-stopped:
+		}
+	}()
+	defer func() {
+		close(stopped)
+		<-shutdownDone
+	}()
+	log.Printf("Tour Track listening on %s", addr)
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("serve HTTP: %w", err)
+	}
+	return nil
+}
+
+func newApplication(svc *service.TourTrackService) (http.Handler, error) {
+	h, err := handlers.New(svc, assets)
+	if err != nil {
+		return nil, fmt.Errorf("load templates: %w", err)
+	}
+	staticFiles, err := fs.Sub(assets, "static")
+	if err != nil {
+		return nil, fmt.Errorf("load static files: %w", err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFiles)))
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	mux.HandleFunc("/api/refresh", h.Refresh)
+	mux.HandleFunc("/artist/", h.Artist)
+	mux.HandleFunc("/", h.Index)
+	return recoverMiddleware(mux), nil
+}
+
+func recoverMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' https: http: data:; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 		defer func() {
-			if rec := recover(); rec != nil {
-				log.Printf("recovered from panic while serving %s: %v", r.URL.Path, rec)
-				renderErrorPage(w, http.StatusInternalServerError, "Internal server error", "Something went wrong while processing the request.", errorTemplate)
+			if recovered := recover(); recovered != nil {
+				log.Printf("panic serving %s: %v", r.URL.Path, recovered)
+				http.Error(w, "Something went wrong. Please try again.", http.StatusInternalServerError)
 			}
 		}()
 		next.ServeHTTP(w, r)
 	})
-}
-
-func renderErrorPage(w http.ResponseWriter, status int, title, message string, tmpl *template.Template) {
-	if tmpl == nil {
-		http.Error(w, message, status)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	if err := tmpl.Execute(w, struct {
-		Status  int
-		Title   string
-		Message string
-	}{
-		Status:  status,
-		Title:   title,
-		Message: message,
-	}); err != nil {
-		log.Printf("failed to render error template: %v", err)
-		_, _ = w.Write([]byte(message))
-	}
 }

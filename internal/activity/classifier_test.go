@@ -2,79 +2,84 @@ package activity
 
 import "testing"
 
-func TestScoreFromMetrics(t *testing.T) {
+func TestCalculateScore(t *testing.T) {
 	tests := []struct {
-		name         string
-		tourSpread   int
-		concertCount int
-		careerYears  int
-		want         int
+		name                                  string
+		tourSpread, concertCount, careerYears int
+		want                                  int
 	}{
-		{name: "zero values", tourSpread: 0, concertCount: 0, careerYears: 0, want: 0},
-		{name: "positive values", tourSpread: 3, concertCount: 4, careerYears: 12, want: 3*2 + 4*3 + minInt(10, 12/5)},
-		{name: "negative values sanitized", tourSpread: -4, concertCount: -2, careerYears: -6, want: 0},
+		{"empty history", 0, 0, 0, 0},
+		{"weighted inputs", 3, 4, 12, 20},
+		{"countries count twice", 4, 0, 0, 8},
+		{"concerts count three times", 0, 4, 0, 12},
+		{"incomplete five-year period", 0, 0, 4, 0},
+		{"first five-year period", 0, 0, 5, 1},
+		{"integer division", 0, 0, 9, 1},
+		{"last period before cap", 0, 0, 49, 9},
+		{"career cap boundary", 0, 0, 50, 10},
+		{"long career stays capped", 2, 3, 150, 23},
+		{"negative inputs", -4, -2, -6, 0},
+		{"negative spread preserves other inputs", -1, 2, 5, 7},
+		{"negative concerts preserve other inputs", 2, -1, 5, 5},
+		{"future career preserves touring inputs", 2, 2, -5, 10},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := scoreFromMetrics(tt.tourSpread, tt.concertCount, tt.careerYears); got != tt.want {
-				t.Fatalf("scoreFromMetrics(%d, %d, %d) = %d; want %d", tt.tourSpread, tt.concertCount, tt.careerYears, got, tt.want)
+			if got := CalculateScore(tt.tourSpread, tt.concertCount, tt.careerYears); got != tt.want {
+				t.Fatalf("CalculateScore(%d, %d, %d) = %d; want %d", tt.tourSpread, tt.concertCount, tt.careerYears, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestCalculateScore_EquivalentToHelper(t *testing.T) {
-	for _, tc := range []struct {
+func TestClassifyActivityBoundaries(t *testing.T) {
+	tests := []struct {
+		name                                  string
 		tourSpread, concertCount, careerYears int
+		want                                  string
 	}{
-		{0, 0, 0},
-		{2, 1, 4},
-		{5, 3, 12},
-		{8, 9, 30},
-	} {
-		if got := CalculateScore(tc.tourSpread, tc.concertCount, tc.careerYears); got != scoreFromMetrics(tc.tourSpread, tc.concertCount, tc.careerYears) {
-			t.Fatalf("CalculateScore(%d, %d, %d) = %d; helper returned %d", tc.tourSpread, tc.concertCount, tc.careerYears, got, scoreFromMetrics(tc.tourSpread, tc.concertCount, tc.careerYears))
-		}
+		{"score 0", 0, 0, 0, "Emerging"},
+		{"score 10", 2, 2, 0, "Emerging"},
+		{"score 11", 1, 3, 0, "Active"},
+		{"score 25", 5, 5, 0, "Active"},
+		{"score 26", 3, 6, 10, "Established"},
+		{"score 40", 4, 10, 10, "Established"},
+		{"score 41", 6, 9, 10, "Legendary"},
+		{"large score", 20, 100, 100, "Legendary"},
+		{"negative inputs", -1, -1, -1, "Emerging"},
 	}
-}
-
-func TestClassifyActivity_Boundaries(t *testing.T) {
-	cases := []struct {
-		name         string
-		tourSpread   int
-		concertCount int
-		careerYears  int
-		want         string
-	}{
-		{name: "boundary-0", tourSpread: 0, concertCount: 0, careerYears: 0, want: "Emerging"},
-		{name: "boundary-10", tourSpread: 2, concertCount: 2, careerYears: 0, want: "Emerging"},
-		{name: "boundary-11", tourSpread: 1, concertCount: 3, careerYears: 0, want: "Active"},
-		{name: "boundary-25", tourSpread: 5, concertCount: 5, careerYears: 0, want: "Active"},
-		{name: "boundary-26", tourSpread: 3, concertCount: 6, careerYears: 10, want: "Established"},
-		{name: "boundary-40", tourSpread: 4, concertCount: 10, careerYears: 10, want: "Established"},
-		{name: "boundary-41", tourSpread: 6, concertCount: 9, careerYears: 10, want: "Legendary"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := ClassifyActivity(tc.tourSpread, tc.concertCount, tc.careerYears); got != tc.want {
-				t.Fatalf("ClassifyActivity(%d, %d, %d) = %q; want %q", tc.tourSpread, tc.concertCount, tc.careerYears, got, tc.want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClassifyActivity(tt.tourSpread, tt.concertCount, tt.careerYears); got != tt.want {
+				t.Fatalf("ClassifyActivity(%d, %d, %d) = %q; want %q", tt.tourSpread, tt.concertCount, tt.careerYears, got, tt.want)
 			}
 		})
 	}
 }
 
 func TestIsRisingStar(t *testing.T) {
-	if !IsRisingStar(12, 20, 8) {
-		t.Fatal("expected rising star status when recent tempo exceeds long-term average by 50%+")
+	tests := []struct {
+		name                                       string
+		recentConcerts, totalConcerts, careerYears int
+		want                                       bool
+	}{
+		{"subject example above threshold", 14, 40, 10, true},
+		{"subject example below threshold", 10, 40, 10, false},
+		{"exactly 150 percent is excluded", 12, 40, 10, false},
+		{"one additional concert exceeds threshold", 13, 40, 10, true},
+		{"fractional career average", 2, 5, 10, true},
+		{"no recent concerts", 0, 20, 10, false},
+		{"no career concerts", 2, 0, 10, false},
+		{"zero career duration", 2, 20, 0, false},
+		{"negative career duration", 2, 20, -1, false},
+		{"negative total concerts", 2, -1, 10, false},
+		{"negative recent concerts", -1, 20, 10, false},
 	}
-
-	if IsRisingStar(2, 10, 10) {
-		t.Fatal("did not expect rising star status when tempo is below threshold")
-	}
-
-	if IsRisingStar(4, 12, 8) {
-		t.Fatal("did not expect rising star status below the 50% threshold")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsRisingStar(tt.recentConcerts, tt.totalConcerts, tt.careerYears); got != tt.want {
+				t.Fatalf("IsRisingStar(%d, %d, %d) = %t; want %t", tt.recentConcerts, tt.totalConcerts, tt.careerYears, got, tt.want)
+			}
+		})
 	}
 }

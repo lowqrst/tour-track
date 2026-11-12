@@ -1,76 +1,51 @@
-document.addEventListener('DOMContentLoaded', function () {
-  const refreshBtn = document.getElementById('refreshBtn');
-  const banner = document.getElementById('statusBanner');
-  const activityField = document.getElementById('activityField');
-  const viewMode = document.getElementById('viewMode');
+"use strict";
 
-  const bindActivityFilters = function () {
-    document.querySelectorAll('.activity-pill').forEach(function (button) {
-      button.addEventListener('click', function () {
-        const form = button.closest('form');
-        if (activityField) {
-          activityField.value = button.dataset.activity || '';
-        }
-        if (form) {
-          form.submit();
-          return;
-        }
-        const url = new URL(window.location.href);
-        url.searchParams.set('activity', button.dataset.activity || '');
-        window.location.href = url.toString();
-      });
-    });
+// The catalog is server-rendered; search, filters, and views work without JavaScript.
+const imageFallback = "/static/artist-placeholder.svg";
+for (const artistImage of document.querySelectorAll("img")) {
+  const useFallback = () => {
+    if (artistImage.getAttribute("src") !== imageFallback) {
+      artistImage.src = imageFallback;
+      artistImage.classList.add("image-unavailable");
+    }
   };
+  artistImage.addEventListener("error", useFallback);
+  if (artistImage.complete && artistImage.naturalWidth === 0) useFallback();
+}
 
-  const bindViewButtons = function () {
-    document.querySelectorAll('.view-btn').forEach(function (button) {
-      button.addEventListener('click', function () {
-        const nextValue = button.dataset.view || 'cards';
-        if (viewMode) {
-          viewMode.value = nextValue;
-        }
-        const form = button.closest('form');
-        if (form) {
-          form.submit();
-          return;
-        }
-        const url = new URL(window.location.href);
-        url.searchParams.set('view', nextValue);
-        window.location.href = url.toString();
+const refreshButton = document.getElementById("refreshBtn");
+const statusBanner = document.getElementById("statusBanner");
+if (refreshButton && statusBanner) {
+  refreshButton.addEventListener("click", async () => {
+    const originalLabel = refreshButton.innerHTML;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    refreshButton.disabled = true;
+    refreshButton.textContent = "Refreshing…";
+    statusBanner.hidden = false;
+    statusBanner.classList.remove("is-error");
+    statusBanner.textContent = "Getting the latest artist data…";
+    try {
+      const response = await fetch("/api/refresh", {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
       });
-    });
-  };
-
-  bindActivityFilters();
-  bindViewButtons();
-
-  if (refreshBtn) {
-    refreshBtn.addEventListener('click', function () {
-      if (banner) {
-        banner.classList.add('visible');
-        banner.textContent = 'Refreshing artist data...';
+      const payload = await response.json();
+      if (!response.ok || payload.status === "error") {
+        throw new Error(payload.message || "The API could not be refreshed. Please try again shortly.");
       }
-
-      fetch('/api/refresh', { method: 'POST' })
-        .then(function (response) {
-          if (!response.ok) {
-            throw new Error('Refresh failed');
-          }
-          return response.json();
-        })
-        .then(function (payload) {
-          if (banner) {
-            banner.textContent = payload.message || 'Data refreshed successfully';
-            banner.classList.add('visible');
-          }
-          window.location.reload();
-        })
-        .catch(function () {
-          if (banner) {
-            banner.textContent = 'Refresh failed. The app stayed online with cached fallback data.';
-            banner.classList.add('visible');
-          }
-        });
-    });
-  }
-});
+      statusBanner.textContent = payload.message || "The collection has been refreshed.";
+      window.location.reload();
+    } catch (error) {
+      statusBanner.classList.add("is-error");
+      statusBanner.textContent = error.name === "AbortError"
+        ? "The refresh took too long. You can still explore the collection below."
+        : error.message || "The refresh could not be completed. Please try again shortly.";
+    } finally {
+      window.clearTimeout(timeout);
+      refreshButton.disabled = false;
+      refreshButton.innerHTML = originalLabel;
+    }
+  });
+}

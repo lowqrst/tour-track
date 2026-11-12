@@ -1,28 +1,18 @@
 package activity
 
-// CalculateScore computes the artist activity score based on spread, concert count, and career length.
+// CalculateScore applies the subject's weighted activity formula. Negative inputs
+// are treated as zero. Career years use integer division, so only completed
+// five-year periods contribute, up to a maximum career bonus of ten.
 func CalculateScore(tourSpread, concertCount, careerYears int) int {
-	return scoreFromMetrics(tourSpread, concertCount, careerYears)
+	tourSpread = max(0, tourSpread)
+	concertCount = max(0, concertCount)
+	careerYears = max(0, careerYears)
+	return tourSpread*2 + concertCount*3 + min(10, careerYears/5)
 }
 
-func scoreFromMetrics(tourSpread, concertCount, careerYears int) int {
-	if tourSpread < 0 {
-		tourSpread = 0
-	}
-	if concertCount < 0 {
-		concertCount = 0
-	}
-	if careerYears < 0 {
-		careerYears = 0
-	}
-
-	careerBonus := minInt(10, careerYears/5)
-	return (tourSpread * 2) + (concertCount * 3) + careerBonus
-}
-
-// ClassifyActivity maps a score to a human-friendly activity label.
+// ClassifyActivity labels an artist using the four required score intervals.
 func ClassifyActivity(tourSpread, concertCount, careerYears int) string {
-	score := scoreFromMetrics(tourSpread, concertCount, careerYears)
+	score := CalculateScore(tourSpread, concertCount, careerYears)
 
 	switch {
 	case score <= 10:
@@ -36,22 +26,15 @@ func ClassifyActivity(tourSpread, concertCount, careerYears int) string {
 	}
 }
 
-// IsRisingStar compares recent activity tempo to the long-term average.
-// It returns true when the average concerts-per-year in the last two years exceeds
-// the career baseline by more than 50%.
+// IsRisingStar reports whether the recent two-year concert rate exceeds 150% of
+// the career average. The caller supplies the concert count for that window.
+// Without a positive career duration and concert counts, no rate is inferred.
 func IsRisingStar(recentConcerts, totalConcerts, careerYears int) bool {
-	if careerYears <= 0 || totalConcerts <= 0 {
+	if careerYears <= 0 || totalConcerts <= 0 || recentConcerts <= 0 {
 		return false
 	}
 
 	avgTempo := float64(totalConcerts) / float64(careerYears)
 	recentTempo := float64(recentConcerts) / 2.0
 	return recentTempo > avgTempo*1.5
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

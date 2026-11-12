@@ -1,82 +1,135 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{{.Profile.Artist.Name}} | Tour Track</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{.Profile.Artist.Name}} — Tour Track</title>
+    <meta name="description" content="Explore the members, touring history, and activity score of {{.Profile.Artist.Name}}.">
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
   </head>
   <body>
-    <div class="container">
-      <header>
-        <div>
-          <p style="color:#7dd3fc; margin-bottom: 8px; letter-spacing: 0.08em; text-transform: uppercase;">Artist profile</p>
-          <h1>{{.Profile.Artist.Name}}</h1>
+    {{template "header"}}
+    <main id="main" class="shell detail-page">
+      <a class="back-link" href="/#artists"><span aria-hidden="true">←</span> Back to the collection</a>{{template "warning" .}}
+      <section class="profile-hero" aria-labelledby="artist-title">
+        <div class="profile-artwork">
+          <img src="{{.Profile.Artist.Image}}" alt="{{.Profile.Artist.Name}}" width="640" height="640">
+          <span class="artwork-label">TOUR TRACK / ARTIST {{.Profile.Artist.ID}}</span>
         </div>
-        <a href="/" style="color: white; text-decoration: none;">← Back to dashboard</a>
-      </header>
-
-      <section class="artist-detail">
-        <img src="{{.Profile.Artist.Image}}" alt="{{.Profile.Artist.Name}}" />
-        <div class="detail-body">
+        <div class="profile-intro">
+          <p class="eyebrow">The artist / Since {{.Profile.Artist.StartYear}}</p>
+          <h1 id="artist-title">{{.Profile.Artist.Name}}</h1>
           <div class="badge-row">
-            <span class="badge {{.Profile.ActivityLabel}}">{{.Profile.ActivityLabel}}</span>
-            {{if .Profile.RisingStar}}<span class="badge Rising">Rising Star</span>{{end}}
+            {{template "badges" .Profile}}
           </div>
-
-          <p style="color: #cbd5e1; font-size: 1.05rem; margin-bottom: 18px;">{{.Profile.Artist.Style}}</p>
-
-          <div class="score-box">
-            <div class="score-item">
-              <span class="label">Score</span>
-              <strong>{{.Profile.Score}}</strong>
-            </div>
-            <div class="score-item">
-              <span class="label">Countries</span>
-              <strong>{{len .Profile.Countries}}</strong>
-            </div>
-            <div class="score-item">
-              <span class="label">Concerts</span>
-              <strong>{{len .Profile.ConcertDates}}</strong>
-            </div>
-            <div class="score-item">
-              <span class="label">Started</span>
-              <strong>{{.Profile.Artist.StartYear}}</strong>
-            </div>
-          </div>
-
-          <div style="margin-top: 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(250px,1fr)); gap: 18px;">
+          <p class="profile-deck">{{.Profile.CareerYears}} years of music.<br>{{len .Profile.Countries}} countries along the way.</p>
+          <dl class="profile-facts">
             <div>
-              <h3>Members</h3>
-              <ul class="list">
-                {{range .Profile.Artist.Members}}
-                  <li>{{.}}</li>
-                {{end}}
-              </ul>
+              <dt>First album</dt>
+              <dd>{{if .Profile.Artist.FirstAlbumDate}}{{.Profile.Artist.FirstAlbumDate}}{{else}}Not listed{{end}}</dd>
             </div>
-
             <div>
-              <h3>Countries reached</h3>
-              <ul class="list">
-                {{range .Profile.Countries}}
-                  <li>{{.}}</li>
-                {{end}}
-              </ul>
+              <dt>Formed</dt>
+              <dd>{{.Profile.Artist.StartYear}}</dd>
             </div>
-          </div>
-
-          <div style="margin-top: 24px;">
-            <h3>Concert itinerary</h3>
-            <ul class="list">
-              {{range .Profile.ConcertEvents}}
-                <li>{{.Date}} — {{.Venue}}, {{.City}}, {{.Country}}</li>
-              {{else}}
-                <li>No concert data available.</li>
-              {{end}}
-            </ul>
-          </div>
+            <div>
+              <dt>Members</dt>
+              <dd>{{len .Profile.Artist.Members}}</dd>
+            </div>
+          </dl>
+          <a class="button button-dark" href="#itinerary">Explore the tour history <span aria-hidden="true">↓</span></a>
         </div>
       </section>
-    </div>
+      <section class="activity-panel" aria-labelledby="activity-title">
+        <div class="activity-panel-heading">
+          <p class="eyebrow">The activity score</p>
+          <h2 id="activity-title">A journey in numbers.</h2>
+          <p>Calculated from the API’s listed tour data.</p>
+        </div>
+        <div class="score-total">
+          <strong>{{.Profile.Score}}</strong><span>activity points</span>
+        </div>
+        <div class="score-breakdown">
+          <div>
+            <span>Tour countries</span><strong>{{len .Profile.Countries}} <small>× 2</small></strong>
+          </div>
+          <span class="math-sign" aria-hidden="true">+</span>
+          <div>
+            <span>Concert dates</span><strong>{{len .Profile.ConcertDates}} <small>× 3</small></strong>
+          </div>
+          <span class="math-sign" aria-hidden="true">+</span>
+          <div>
+            <span>Career bonus</span><strong>{{.Profile.CareerBonus}} <small>/ 10</small></strong>
+          </div>
+        </div>
+        <p class="score-explanation">Career bonus: {{.Profile.CareerYears}} career years ÷ 5, rounded down and capped at 10. <a href="/#how-it-works">How the labels work ↗</a></p>
+      </section>
+      <div class="profile-content">
+        <section class="people-section" aria-labelledby="members-title">
+          <div class="subsection-heading">
+            <p class="eyebrow">The people behind the music</p>
+            <h2 id="members-title">Meet the members<span class="accent-period">.</span></h2>
+          </div>
+          <ul class="member-list">
+            {{range .Profile.Artist.Members}}
+              <li><span class="member-symbol" aria-hidden="true">↗</span>{{.}}</li>
+            {{else}}
+              <li>No members listed in the API.</li>
+            {{end}}
+          </ul>
+        </section>
+        <section class="countries-section" aria-labelledby="countries-title">
+          <div class="subsection-heading">
+            <p class="eyebrow">The places along the way</p>
+            <h2 id="countries-title">Across the world<span class="accent-period">.</span></h2>
+          </div>
+          <div class="country-chips">
+            {{range .Profile.Countries}}
+              <a href="/?country={{urlquery .}}#artists">{{.}} <span aria-hidden="true">↗</span></a>
+            {{else}}
+              <p>No tour countries listed.</p>
+            {{end}}
+          </div>
+        </section>
+      </div>
+      <section class="itinerary-section" id="itinerary" aria-labelledby="itinerary-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">On the road</p>
+            <h2 id="itinerary-title">The tour history<span class="accent-period">.</span></h2>
+          </div>
+          <p class="section-note">Locations and dates, connected.</p>
+        </div>
+        <p class="archive-note">An archive of concerts supplied by the API. Past entries are historical; future entries are not confirmed ticket listings.</p>
+        {{if .Profile.ConcertEvents}}
+          <div class="itinerary-list">
+            {{range .Profile.ConcertEvents}}
+              <article class="itinerary-row">
+                <span class="itinerary-marker" aria-hidden="true">✳</span>
+                <p class="itinerary-date">{{.Date}}</p>
+                <div class="itinerary-place">
+                  <h3>{{if .City}}{{.City}}{{else}}Location not listed{{end}}</h3>
+                  <p>{{.Country}}</p>
+                </div>
+                <span class="itinerary-label">Concert date</span>
+              </article>
+            {{end}}
+          </div>
+        {{else}}
+          <div class="empty-state compact">
+            <h3>No stops listed yet.</h3>
+            <p>This artist’s API entry does not include a concert itinerary.</p>
+          </div>
+        {{end}}
+      </section>
+      <div class="end-note">
+        <span class="little-record" aria-hidden="true"></span>
+        <p>Every stop is part of the story.</p>
+        <a href="/#artists">Discover another artist ↗</a>
+      </div>
+    </main>
+    {{template "footer"}}
   </body>
 </html>

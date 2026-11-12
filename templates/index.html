@@ -1,168 +1,277 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tour Track</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Discover artists, trace their concert journeys, and explore the stories behind their activity scores.">
+    <title>Tour Track — Follow the music.</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
   </head>
   <body>
-    <div class="container">
-      <header>
-        <div>
-          <p style="color:#7dd3fc; margin-bottom: 8px; letter-spacing: 0.08em; text-transform: uppercase;">Live tour intelligence</p>
-          <h1>Tour Track</h1>
-        </div>
-        <button id="refreshBtn" class="secondary" type="button">Refresh tour data</button>
-      </header>
-
-      <div id="statusBanner" class="status-banner" aria-live="polite">Ready</div>
-
-      <form class="toolbar" method="GET" action="/">
-        <div class="field">
-          <label for="q">Search</label>
-          <input id="q" name="q" type="text" value="{{.Query}}" placeholder="Artist or style" />
-        </div>
-
-        <div class="field">
-          <label for="style">Style</label>
-          <select id="style" name="style">
-            <option value="">All styles</option>
-            {{range .Styles}}
-              <option value="{{.}}" {{if eq $.Style .}}selected{{end}}>{{.}}</option>
-            {{end}}
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="year">Start year</label>
-          <select id="year" name="year">
-            <option value="">All years</option>
-            {{range .Years}}
-              <option value="{{.}}" {{if eq $.Year (printf "%d" .)}}selected{{end}}>{{.}}</option>
-            {{end}}
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="member">Member</label>
-          <input id="member" name="member" type="text" value="{{.Member}}" placeholder="Search member" />
-        </div>
-
-        <div class="field">
-          <label for="sort">Sort by</label>
-          <select id="sort" name="sort">
-            <option value="name" {{if eq .Sort "name"}}selected{{end}}>Name</option>
-            <option value="concerts" {{if eq .Sort "concerts"}}selected{{end}}>Concert count</option>
-            <option value="spread" {{if eq .Sort "spread"}}selected{{end}}>Tour spread</option>
-            <option value="year" {{if eq .Sort "year"}}selected{{end}}>Start year</option>
-          </select>
-        </div>
-
-        <div class="field">
-          <label>View</label>
-          <div class="view-switcher">
-            <button type="button" class="view-btn {{if or (eq .View "") (eq .View "cards")}}active{{end}}" data-view="cards">Cards</button>
-            <button type="button" class="view-btn {{if eq .View "grid"}}active{{end}}" data-view="grid">Grid</button>
-            <button type="button" class="view-btn {{if eq .View "table"}}active{{end}}" data-view="table">Table</button>
-            <button type="button" class="view-btn {{if eq .View "list"}}active{{end}}" data-view="list">List</button>
-            <input type="hidden" id="viewMode" name="view" value="{{if .View}}{{.View}}{{else}}cards{{end}}" />
+    {{template "header"}}
+    <main id="main">
+      <section class="hero shell" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="tiny-cross" aria-hidden="true">✳</span> A world of artists. One place to explore.</p>
+          <h1 id="hero-title">Follow<br>the <span class="highlight">music.</span></h1>
+          <p class="hero-description">From first records to world tours. Discover the artists, trace their journeys, and see what keeps them moving.</p>
+          <a class="button button-dark" href="#artists">Find your next favorite <span aria-hidden="true">↗</span></a>
+          <div class="hero-footnote">
+            <span class="little-record" aria-hidden="true"></span><span>For the curious. For the fans.</span>
           </div>
         </div>
-
-        <input type="hidden" id="activityField" name="activity" value="{{.Activity}}" />
-
-        <div class="field" style="justify-content: flex-end;">
-          <button type="submit">Apply filters</button>
-        </div>
-      </form>
-
-      <div class="activity-switcher">
-        <button type="button" class="activity-pill {{if eq .Activity ""}}active{{end}}" data-activity="">All</button>
-        <button type="button" class="activity-pill {{if eq .Activity "Emerging"}}active{{end}}" data-activity="Emerging">Emerging</button>
-        <button type="button" class="activity-pill {{if eq .Activity "Active"}}active{{end}}" data-activity="Active">Active</button>
-        <button type="button" class="activity-pill {{if eq .Activity "Established"}}active{{end}}" data-activity="Established">Established</button>
-        <button type="button" class="activity-pill {{if eq .Activity "Legendary"}}active{{end}}" data-activity="Legendary">Legendary</button>
-        <button type="button" class="activity-pill {{if eq .Activity "Rising Star"}}active{{end}}" data-activity="Rising Star">Rising Star</button>
-      </div>
-
-      <main>
-        {{if eq .View "table"}}
-          <div class="table-wrap">
-            <table class="tour-table">
-              <thead>
-                <tr>
-                  <th>Artist</th>
-                  <th>Style</th>
-                  <th>Activity</th>
-                  <th>Concerts</th>
-                  <th>Countries</th>
-                  <th>Started</th>
-                </tr>
-              </thead>
-              <tbody>
-                {{range .Profiles}}
-                  <tr>
-                    <td><a href="/artist/{{.Artist.ID}}">{{.Artist.Name}}</a></td>
-                    <td>{{.Artist.Style}}</td>
-                    <td><span class="badge {{.ActivityLabel}}">{{.ActivityLabel}}</span>{{if .RisingStar}} <span class="badge Rising">Rising Star</span>{{end}}</td>
-                    <td>{{len .ConcertDates}}</td>
-                    <td>{{len .Countries}}</td>
-                    <td>{{.Artist.StartYear}}</td>
-                  </tr>
-                {{else}}
-                  <tr><td colspan="6">No artists match the selected filters.</td></tr>
-                {{end}}
-              </tbody>
-            </table>
-          </div>
-        {{else if eq .View "list"}}
-          <div class="list-view">
-            {{range .Profiles}}
-              <div class="list-item">
-                <div>
-                  <h3><a href="/artist/{{.Artist.ID}}">{{.Artist.Name}}</a></h3>
-                  <p>{{.Artist.Style}} • {{.Artist.StartYear}} • {{len .ConcertDates}} concerts</p>
-                </div>
-                <div class="badge-row">
-                  <span class="badge {{.ActivityLabel}}">{{.ActivityLabel}}</span>
-                  {{if .RisingStar}}<span class="badge Rising">Rising Star</span>{{end}}
-                </div>
+        {{with .Featured}}
+          <a class="feature-card" href="/artist/{{.Artist.ID}}" aria-label="Explore {{.Artist.Name}}">
+            <div class="feature-top">
+              <span class="eyebrow">In the spotlight</span><span class="feature-arrow" aria-hidden="true">↗</span>
+            </div>
+            <div class="feature-visual">
+              <div class="record-rings" aria-hidden="true"></div>
+              <img src="{{.Artist.Image}}" alt="{{.Artist.Name}}" class="feature-image" width="260" height="260">
+              <span class="record-label" aria-hidden="true">SIDE A<br>ON REPEAT</span>
+            </div>
+            <div class="feature-caption">
+              <div>
+                <span class="overline">Making waves since {{.Artist.StartYear}}</span>
+                <h2>{{.Artist.Name}}</h2>
               </div>
-            {{else}}
-              <div class="card" style="padding: 24px; color: #0f172a;">No artists match the selected filters.</div>
-            {{end}}
-          </div>
+              {{template "badges" .}}
+            </div>
+          </a>
         {{else}}
-          <div class="grid">
-            {{range .Profiles}}
-              <article class="card">
-                <img src="{{.Artist.Image}}" alt="{{.Artist.Name}}" />
-                <div class="card-body">
-                  <div class="badge-row">
-                    <span class="badge {{.ActivityLabel}}">{{.ActivityLabel}}</span>
-                    {{if .RisingStar}}<span class="badge Rising">Rising Star</span>{{end}}
-                  </div>
-                  <h3><a href="/artist/{{.Artist.ID}}">{{.Artist.Name}}</a></h3>
-                  <p>{{.Artist.Style}}</p>
-                  <div class="meta">
-                    <span>Tour spread: {{len .Countries}}</span>
-                    <span>Score: {{.Score}}</span>
-                  </div>
-                  <div class="meta">
-                    <span>Start: {{.Artist.StartYear}}</span>
-                    <span>{{len .ConcertDates}} concerts</span>
-                  </div>
-                </div>
-              </article>
-            {{else}}
-              <div class="card" style="padding: 24px; color: #0f172a; grid-column: 1 / -1;">No artists match the selected filters.</div>
-            {{end}}
+          <div class="feature-card feature-placeholder">
+            <div class="record-rings" aria-hidden="true"></div>
+            <p class="eyebrow">Every artist has a journey.</p>
+            <p class="feature-quote">Find the<br>next one.</p>
+            <span class="feature-arrow" aria-hidden="true">↗</span>
           </div>
         {{end}}
-      </main>
-    </div>
-
-    <script src="/static/app.js"></script>
+      </section>
+      <div class="stats-band">
+        <div class="shell stats-inner">
+          <p class="stats-intro">Big names.<br>Bigger journeys.</p>
+          <div class="stat">
+            <strong>{{.TotalArtists}}</strong><span>Artists to discover</span>
+          </div>
+          <div class="stat">
+            <strong>{{.TotalCountries}}</strong><span>Countries reached</span>
+          </div>
+          <div class="stat">
+            <strong>{{.TotalConcerts}}</strong><span>Concert dates listed</span>
+          </div>
+          <span class="stats-stamp" aria-hidden="true">TURN IT UP<br>✳<br>GO EXPLORE</span>
+        </div>
+      </div>
+      <section class="catalog shell" id="artists" aria-labelledby="artists-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">The collection / 01</p>
+            <h2 id="artists-title">Meet the artists<span class="accent-period">.</span></h2>
+          </div>
+          <div class="data-status">
+            <span>{{if .Demo}}Offline snapshot{{else if .Stale}}Cached API data{{else}}API collection{{end}}{{if .UpdatedAt}} · {{.UpdatedAt}}{{end}}</span><button class="text-button refresh-button" id="refreshBtn" type="button"><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M16 8a6 6 0 1 0 0 5M16 3v5h-5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>Refresh data</button>
+          </div>
+        </div>
+        {{template "warning" .}}
+        <p class="status-banner" id="statusBanner" role="status" aria-live="polite" hidden></p>
+        <form class="filter-form" method="get" action="/#artists" role="search">
+          <div class="search-row">
+            <label class="search-field" for="q"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m15 15 6 6" stroke="currentColor" stroke-width="1.7"/></svg><span class="sr-only">Search artists, members, or places</span><input id="q" name="q" type="search" value="{{.Query}}" placeholder="An artist, a member, a place…" maxlength="200"></label>
+            <button class="button button-dark search-button" type="submit">Search artists <span aria-hidden="true">↗</span></button>
+          </div>
+          <div class="filter-row">
+            <div class="field">
+              <label for="country">Tour country</label>
+              <select id="country" name="country">
+                <option value="">Anywhere in the world</option>
+                {{range .Countries}}
+                  <option value="{{.}}" {{if eq $.Country .}}selected{{end}}>{{.}}</option>
+                {{end}}
+              </select>
+            </div>
+            <div class="field">
+              <label for="year">Formed in</label>
+              <select id="year" name="year">
+                <option value="">Any year</option>
+                {{range .Years}}
+                  <option value="{{.}}" {{if eq $.Year (printf "%d" .)}}selected{{end}}>{{.}}</option>
+                {{end}}
+              </select>
+            </div>
+            <div class="field">
+              <label for="member">Band member</label>
+              <input id="member" name="member" value="{{.Member}}" placeholder="Any member" maxlength="200">
+            </div>
+            <div class="field">
+              <label for="sort">Sort by</label>
+              <select id="sort" name="sort">
+                <option value="name" {{if eq .Sort "name"}}selected{{end}}>Name, A–Z</option>
+                <option value="score" {{if eq .Sort "score"}}selected{{end}}>Highest activity score</option>
+                <option value="concerts" {{if eq .Sort "concerts"}}selected{{end}}>Most concert dates</option>
+                <option value="spread" {{if eq .Sort "spread"}}selected{{end}}>Most countries</option>
+                <option value="year" {{if eq .Sort "year"}}selected{{end}}>Newest artists</option>
+              </select>
+            </div>
+            <a class="reset-link" href="/#artists">Reset <span aria-hidden="true">↺</span></a>
+          </div>
+          <input type="hidden" name="activity" value="{{.Activity}}">
+          <input type="hidden" name="view" value="{{.View}}">
+        </form>
+        <div class="catalog-controls">
+          <nav class="activity-tabs" aria-label="Filter by activity">
+            <a class="activity-tab {{if eq .Activity ""}}selected{{end}}" {{if eq .Activity ""}}aria-current="true"{{end}}
+              href="/?q={{urlquery .Query}}&amp;country={{urlquery .Country}}&amp;year={{urlquery .Year}}&amp;member={{urlquery .Member}}&amp;sort={{urlquery .Sort}}&amp;view={{urlquery .View}}#artists">All artists</a>
+            <a class="activity-tab {{if eq .Activity "Emerging"}}selected{{end}}" {{if eq .Activity "Emerging"}}aria-current="true"{{end}}
+              href="/?q={{urlquery .Query}}&amp;country={{urlquery .Country}}&amp;year={{urlquery .Year}}&amp;member={{urlquery .Member}}&amp;sort={{urlquery .Sort}}&amp;view={{urlquery .View}}&amp;activity=Emerging#artists">Emerging</a>
+            <a class="activity-tab {{if eq .Activity "Active"}}selected{{end}}" {{if eq .Activity "Active"}}aria-current="true"{{end}}
+              href="/?q={{urlquery .Query}}&amp;country={{urlquery .Country}}&amp;year={{urlquery .Year}}&amp;member={{urlquery .Member}}&amp;sort={{urlquery .Sort}}&amp;view={{urlquery .View}}&amp;activity=Active#artists">Active</a>
+            <a class="activity-tab {{if eq .Activity "Established"}}selected{{end}}" {{if eq .Activity "Established"}}aria-current="true"{{end}}
+              href="/?q={{urlquery .Query}}&amp;country={{urlquery .Country}}&amp;year={{urlquery .Year}}&amp;member={{urlquery .Member}}&amp;sort={{urlquery .Sort}}&amp;view={{urlquery .View}}&amp;activity=Established#artists">Established</a>
+            <a class="activity-tab {{if eq .Activity "Legendary"}}selected{{end}}" {{if eq .Activity "Legendary"}}aria-current="true"{{end}}
+              href="/?q={{urlquery .Query}}&amp;country={{urlquery .Country}}&amp;year={{urlquery .Year}}&amp;member={{urlquery .Member}}&amp;sort={{urlquery .Sort}}&amp;view={{urlquery .View}}&amp;activity=Legendary#artists">Legendary</a>
+            <a class="activity-tab {{if eq .Activity "Rising Star"}}selected{{end}}" {{if eq .Activity "Rising Star"}}aria-current="true"{{end}}
+              href="/?q={{urlquery .Query}}&amp;country={{urlquery .Country}}&amp;year={{urlquery .Year}}&amp;member={{urlquery .Member}}&amp;sort={{urlquery .Sort}}&amp;view={{urlquery .View}}&amp;activity=Rising+Star#artists">↗ Rising stars</a>
+          </nav>
+          <div class="view-switcher" aria-label="Display view">
+            <a class="view-button {{if or (eq .View "cards") (eq .View "grid")}}selected{{end}}"
+              href="/?q={{urlquery .Query}}&amp;country={{urlquery .Country}}&amp;year={{urlquery .Year}}&amp;member={{urlquery .Member}}&amp;activity={{urlquery .Activity}}&amp;sort={{urlquery .Sort}}&amp;view=cards#artists"
+              {{if or (eq .View "cards") (eq .View "grid")}}aria-current="true"{{end}}
+              aria-label="Card view" title="Card view">
+              <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3 3h5v5H3zm9 0h5v5h-5zM3 12h5v5H3zm9 0h5v5h-5z" fill="currentColor"/></svg>
+            </a>
+            <a class="view-button {{if eq .View "list"}}selected{{end}}"
+              href="/?q={{urlquery .Query}}&amp;country={{urlquery .Country}}&amp;year={{urlquery .Year}}&amp;member={{urlquery .Member}}&amp;activity={{urlquery .Activity}}&amp;sort={{urlquery .Sort}}&amp;view=list#artists"
+              {{if eq .View "list"}}aria-current="true"{{end}}
+              aria-label="List view" title="List view">
+              <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3 4h3v3H3zm5 0h9v3H8zM3 12h3v3H3zm5 0h9v3H8z" fill="currentColor"/></svg>
+            </a>
+            <a class="view-button {{if eq .View "table"}}selected{{end}}"
+              href="/?q={{urlquery .Query}}&amp;country={{urlquery .Country}}&amp;year={{urlquery .Year}}&amp;member={{urlquery .Member}}&amp;activity={{urlquery .Activity}}&amp;sort={{urlquery .Sort}}&amp;view=table#artists"
+              {{if eq .View "table"}}aria-current="true"{{end}}
+              aria-label="Table view" title="Table view">
+              <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3 3h14v14H3zm0 5h14M3 12h14M8 3v14" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+            </a>
+          </div>
+        </div>
+        <p class="results-count">{{len .Profiles}} artists <span>in this collection{{if .Activity}} · {{.Activity}}{{end}}</span></p>
+        {{if .Profiles}}
+          {{if eq .View "table"}}
+            <div class="table-wrap">
+              <table class="tour-table">
+                <caption class="sr-only">Artists and their touring activity</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Artist</th>
+                    <th scope="col">Activity</th>
+                    <th scope="col">Score</th>
+                    <th scope="col">Concerts</th>
+                    <th scope="col">Countries</th>
+                    <th scope="col">Formed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {{range .Profiles}}
+                    <tr>
+                      <th scope="row"><a href="/artist/{{.Artist.ID}}">{{.Artist.Name}} <span aria-hidden="true">↗</span></a></th>
+                      <td>
+                        <div class="badge-row">
+                          {{template "badges" .}}
+                        </div>
+                      </td>
+                      <td>{{.Score}}</td>
+                      <td>{{len .ConcertDates}}</td>
+                      <td>{{len .Countries}}</td>
+                      <td>{{.Artist.StartYear}}</td>
+                    </tr>
+                  {{end}}
+                </tbody>
+              </table>
+            </div>
+          {{else if eq .View "list"}}
+            <div class="artist-list">
+              {{range .Profiles}}
+                <article class="artist-row">
+                  <a class="row-image" href="/artist/{{.Artist.ID}}" tabindex="-1" aria-hidden="true">
+                    <img src="{{.Artist.Image}}" alt="" width="88" height="88" loading="lazy">
+                  </a>
+                  <div class="row-title">
+                    <p class="overline">Since {{.Artist.StartYear}}</p>
+                    <h3><a href="/artist/{{.Artist.ID}}">{{.Artist.Name}}</a></h3>
+                  </div>
+                  <div class="badge-row">
+                    {{template "badges" .}}
+                  </div>
+                  <p class="row-stats"><strong>{{len .ConcertDates}}</strong> concerts <span>·</span> <strong>{{len .Countries}}</strong> countries</p>
+                  <a class="row-arrow" href="/artist/{{.Artist.ID}}" aria-label="Explore {{.Artist.Name}}">↗</a>
+                </article>
+              {{end}}
+            </div>
+          {{else}}
+            <div class="artist-grid">
+              {{range .Profiles}}
+                <article class="artist-card">
+                  <a class="card-image-link" href="/artist/{{.Artist.ID}}" tabindex="-1" aria-hidden="true">
+                  <img src="{{.Artist.Image}}" alt="" width="400" height="400" loading="lazy">
+                  <span class="card-open" aria-hidden="true">↗</span></a>
+                  <div class="card-body">
+                    <div class="card-topline">
+                      <span class="overline">Since {{.Artist.StartYear}}</span><span class="score-mini" title="Activity score">{{.Score}} <span>pts</span></span>
+                    </div>
+                    <h3><a href="/artist/{{.Artist.ID}}">{{.Artist.Name}}</a></h3>
+                    <div class="badge-row">
+                      {{template "badges" .}}
+                    </div>
+                    <div class="card-meta">
+                      <span><strong>{{len .ConcertDates}}</strong> concerts</span><span><strong>{{len .Countries}}</strong> countries</span><span><strong>{{len .Artist.Members}}</strong> members</span>
+                    </div>
+                  </div>
+                </article>
+              {{end}}
+            </div>
+          {{end}}
+        {{else}}
+          <div class="empty-state">
+            <span class="empty-symbol" aria-hidden="true">↗</span>
+            <h3>A little too quiet here.</h3>
+            <p>No artists match these filters. Try another name or open up your search.</p>
+            <a class="button button-dark" href="/#artists">Explore all artists <span aria-hidden="true">↗</span></a>
+          </div>
+        {{end}}
+      </section>
+      <section class="method-section shell" id="how-it-works" aria-labelledby="method-title">
+        <div>
+          <p class="eyebrow">Behind the score / 02</p>
+          <h2 id="method-title">Every journey<br>has a rhythm.</h2>
+          <p>Our activity score brings together tour reach, listed concerts, and years of making music. Simple rules. A fresh perspective.</p>
+        </div>
+        <div class="method-details">
+          <div class="formula">
+            <span>Countries <b>× 2</b></span><i>+</i><span>Concerts <b>× 3</b></span><i>+</i><span>Career bonus <b>up to 10</b></span>
+          </div>
+          <div class="score-legend">
+            <div>
+              <span class="badge Emerging">Emerging</span><span>0–10 points</span>
+            </div>
+            <div>
+              <span class="badge Active">Active</span><span>11–25 points</span>
+            </div>
+            <div>
+              <span class="badge Established">Established</span><span>26–40 points</span>
+            </div>
+            <div>
+              <span class="badge Legendary">Legendary</span><span>41+ points</span>
+            </div>
+          </div>
+          <details class="method-more">
+            <summary>A closer look at the calculation <span aria-hidden="true">+</span></summary>
+            <p>Score = (unique tour countries × 2) + (listed concert dates × 3) + min(10, career years ÷ 5). Career years use the current server year; the career bonus uses whole-number division.</p>
+            <p>A Rising Star has a concert rate over the last two years more than 50% above their career average. Future and invalid dates are excluded from that recent window. These labels describe this API collection, not an artist’s popularity or current touring status.</p>
+          </details>
+        </div>
+      </section>
+    </main>
+    {{template "footer"}}
   </body>
 </html>
