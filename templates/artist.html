@@ -66,6 +66,40 @@
         </div>
         <p class="score-explanation">Career bonus: {{.Profile.CareerYears}} career years ÷ 5, rounded down and capped at 10. <a href="/#how-it-works">How the labels work ↗</a></p>
       </section>
+      <section class="momentum-section" aria-labelledby="momentum-title">
+        <div class="momentum-heading">
+          <p class="eyebrow">The Rising Star detector</p>
+          <h2 id="momentum-title">Picking up the tempo?</h2>
+          {{if .Profile.RisingStar}}
+            <p class="momentum-verdict"><span class="badge Rising">↗ Rising Star</span> Recent activity exceeds 150% of the career average.</p>
+          {{else if and (gt .Profile.CareerYears 0) (gt (len .Profile.ConcertDates) 0)}}
+            <p class="momentum-verdict">Recent activity does not exceed 150% of the career average.</p>
+          {{else}}
+            <p class="momentum-verdict">A positive career length and listed concert history are needed to compare rates.</p>
+          {{end}}
+        </div>
+        <dl class="momentum-comparison">
+          <div>
+            <dt>Recent concert rate</dt>
+            <dd><strong>{{printf "%.2f" .Profile.RecentRate}}</strong> concerts / year</dd>
+            <dd class="momentum-source">{{.Profile.RecentConcerts}} listed dates ÷ 2 years</dd>
+          </div>
+          <div>
+            <dt>Career average</dt>
+            {{if gt .Profile.CareerYears 0}}
+              <dd><strong>{{printf "%.2f" .Profile.CareerRate}}</strong> concerts / year</dd>
+              <dd class="momentum-source">{{len .Profile.ConcertDates}} listed dates ÷ {{.Profile.CareerYears}} career years</dd>
+            {{else}}
+              <dd class="momentum-unavailable">Not available yet</dd>
+              <dd class="momentum-source">No positive career duration</dd>
+            {{end}}
+          </div>
+        </dl>
+        <p class="momentum-explanation">Rising Star requires recent concerts ÷ 2 to be strictly greater than 1.5 × the career average; exactly 150% does not qualify. The recent window runs from today minus two years through today, excluding future and invalid dates. Rates are displayed to two decimal places.</p>
+        {{if eq .Profile.RecentConcerts 0}}
+          <p class="momentum-empty">No listed concerts fall within this rolling two-year window.</p>
+        {{end}}
+      </section>
       <div class="profile-content">
         <section class="people-section" aria-labelledby="members-title">
           <div class="subsection-heading">

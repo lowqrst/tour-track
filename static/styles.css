@@ -204,6 +204,19 @@ input::placeholder { color: #85897d; }
 .math-sign { color: #8c9876; font-size: 21px; }
 .score-explanation { grid-column: 1 / -1; font-size: 10px; color: var(--muted); padding-top: 18px; border-top: 1px solid #cbd3b9; margin-top: -7px; }
 .score-explanation a { text-decoration: underline; text-underline-offset: 3px; margin-left: 8px; }
+.momentum-section { display: grid; grid-template-columns: 1fr 1.15fr; gap: 24px 40px; margin-top: 20px; border: 1px solid var(--line); padding: 28px 32px; }
+.momentum-heading h2 { font-size: 29px; margin-block: 10px 14px; }
+.momentum-verdict { max-width: 350px; color: var(--muted); font-size: 11px; line-height: 1.8; }
+.momentum-verdict .badge { margin-right: 4px; }
+.momentum-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; margin: 0; align-self: center; }
+.momentum-comparison > div { padding-left: 22px; border-left: 1px solid var(--line); }
+.momentum-comparison dt { color: var(--muted); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 8px; }
+.momentum-comparison dd { margin: 0; font-size: 9px; color: var(--muted); }
+.momentum-comparison dd strong { display: block; font-size: 32px; font-weight: 650; letter-spacing: -.05em; line-height: 1.2; color: var(--ink); }
+.momentum-comparison .momentum-source { margin-top: 8px; font-size: 9px; line-height: 1.6; }
+.momentum-comparison .momentum-unavailable { font-size: 17px; color: var(--ink); line-height: 1.5; }
+.momentum-explanation { grid-column: 1 / -1; font-size: 10px; color: var(--muted); line-height: 1.8; border-top: 1px solid var(--line); padding-top: 17px; }
+.momentum-empty { grid-column: 1 / -1; font-size: 10px; color: var(--muted); margin-top: -13px; }
 .profile-content { display: grid; grid-template-columns: 1fr 1fr; gap: 70px; padding-block: 65px; }
 .subsection-heading h2 { font-size: 33px; margin-top: 12px; }
 .member-list { list-style: none; padding: 0; margin: 23px 0 0; border-top: 1px solid var(--line); }
@@ -308,6 +321,9 @@ input::placeholder { color: #85897d; }
   .activity-panel { grid-template-columns: 1fr .6fr; gap: 25px; }
   .score-breakdown { grid-column: 1 / -1; justify-content: space-between; padding-top: 20px; border-top: 1px solid #cbd3b9; }
   .score-total { border-right: 0; }
+  .momentum-section { grid-template-columns: 1fr; gap: 20px; padding: 25px; }
+  .momentum-verdict { max-width: none; }
+  .momentum-comparison > div:first-child { border-left: 0; padding-left: 0; }
   .profile-content { gap: 30px; }
   .subsection-heading h2 { font-size: 28px; }
   .artist-row { gap: 15px; flex-wrap: wrap; }
@@ -406,6 +422,11 @@ input::placeholder { color: #85897d; }
   .score-breakdown > div > span { font-size: 8px; }
   .score-explanation { font-size: 9px; line-height: 1.8; }
   .score-explanation a { margin-left: 0; display: block; margin-top: 5px; }
+  .momentum-section { padding: 20px; }
+  .momentum-heading h2 { font-size: 27px; }
+  .momentum-comparison { gap: 18px; }
+  .momentum-comparison > div { padding-left: 18px; }
+  .momentum-comparison dd strong { font-size: 29px; }
   .profile-content { grid-template-columns: 1fr; gap: 35px; padding-block: 40px; }
   .subsection-heading h2 { font-size: 31px; }
   .itinerary-section { padding-top: 30px; }

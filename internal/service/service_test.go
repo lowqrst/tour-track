@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,6 +40,9 @@ func TestProfilesJoinByArtistIDAndUseListedDates(t *testing.T) {
 	first := profiles[0]
 	if first.Artist.ID != "1" || first.Score != 17 || first.CareerYears != 26 || first.CareerBonus != 5 {
 		t.Fatalf("wrong joined metrics: %+v", first)
+	}
+	if first.RecentConcerts != 2 || first.RecentRate != 1 || first.CareerRate != 2.0/26.0 || !first.RisingStar {
+		t.Fatalf("incorrect recent and career rates: %+v", first)
 	}
 	if !reflect.DeepEqual(first.Countries, []string{"Brazil", "United Kingdom", "United States"}) {
 		t.Fatalf("countries not deduplicated by normalized country: %v", first.Countries)
@@ -93,6 +97,7 @@ func TestCacheRetainsLastGoodSnapshotAndBacksOff(t *testing.T) {
 	svc.status.UpdatedAt = time.Now().Add(-cacheLifetime - time.Second)
 	svc.mu.Unlock()
 	profiles, err := svc.Load()
+	waitForIdle(t, svc)
 	if err != nil || len(profiles) != 52 || !svc.Status().Stale || svc.Status().Message == "" {
 		t.Fatalf("last good data was lost: count=%d status=%+v error=%v", len(profiles), svc.Status(), err)
 	}
@@ -108,6 +113,184 @@ func TestCacheRetainsLastGoodSnapshotAndBacksOff(t *testing.T) {
 	fail.Store(false)
 	if err := svc.Refresh(context.Background()); err != nil || svc.Status().Stale {
 		t.Fatalf("successful refresh did not clear stale status: %v %+v", err, svc.Status())
+	}
+}
+
+func TestCanceledColdLoadDoesNotCancelSharedRefresh(t *testing.T) {
+	gate := make(chan struct{})
+	started := make(chan struct{}, 4)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		started <- struct{}{}
+		select {
+		case <-gate:
+			writeFixture(t, w, r)
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	defer func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	}()
+	svc := NewTourTrackService(server.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := svc.LoadContext(ctx)
+		result <- err
+	}()
+	for range 4 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("shared refresh did not start all four requests")
+		}
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled cold reader returned %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("canceled cold reader waited for the shared upstream response")
+	}
+	if status := svc.Status(); !status.Refreshing || status.LastError != "" {
+		t.Fatalf("visitor cancellation marked the API unavailable: %+v", status)
+	}
+	close(gate)
+	profiles, err := svc.LoadContext(context.Background())
+	if err != nil || len(profiles) != 52 {
+		t.Fatalf("second visitor could not use the shared refresh: %d artists, %v", len(profiles), err)
+	}
+	if requests.Load() != 4 {
+		t.Fatalf("cold readers did not share one batch: %d requests", requests.Load())
+	}
+	if status := svc.Status(); status.LastError != "" || status.Stale || status.Refreshing {
+		t.Fatalf("successful shared refresh left a failure state: %+v", status)
+	}
+}
+
+func TestBackgroundRefreshKeepsCachedReadsResponsiveAndCoalesces(t *testing.T) {
+	var block atomic.Bool
+	var requests atomic.Int32
+	gate := make(chan struct{})
+	started := make(chan struct{}, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if block.Load() {
+			started <- struct{}{}
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		writeFixture(t, w, r)
+	}))
+	defer server.Close()
+	defer func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	}()
+	svc := NewTourTrackService(server.URL)
+	if _, err := svc.Load(); err != nil {
+		t.Fatal(err)
+	}
+	block.Store(true)
+	if status := svc.StartRefresh(); !status.Refreshing {
+		t.Fatalf("asynchronous refresh was not accepted: %+v", status)
+	}
+	for range 4 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("background refresh did not start")
+		}
+	}
+	var group sync.WaitGroup
+	for range 20 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			if !svc.StartRefresh().Refreshing {
+				t.Error("concurrent refresh did not join the current job")
+			}
+		}()
+	}
+	group.Wait()
+	readDone := make(chan error, 1)
+	go func() {
+		profiles, err := svc.Load()
+		if err == nil && len(profiles) != 52 {
+			err = errors.New("cached artists were lost")
+		}
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("cached reader blocked behind the network refresh")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	waiterDone := make(chan error, 1)
+	go func() { waiterDone <- svc.Refresh(ctx) }()
+	select {
+	case err := <-waiterDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("refresh waiter returned %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("refresh waiter ignored its context deadline")
+	}
+	if requests.Load() != 8 {
+		t.Fatalf("concurrent refreshes started duplicate batches: %d requests; want 8 including initial load", requests.Load())
+	}
+	close(gate)
+	waitForIdle(t, svc)
+	if status := svc.Status(); status.Refreshing || status.LastError != "" {
+		t.Fatalf("refresh did not finish successfully: %+v", status)
+	}
+}
+
+func TestDemoRefreshDoesNotStartAnUpstreamJob(t *testing.T) {
+	svc, err := NewDemoService()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := svc.StartRefresh(); status.Source != "demo" || status.Refreshing || status.LastError != "" {
+		t.Fatalf("demo snapshot started an upstream refresh: %+v", status)
+	}
+	if err := svc.Refresh(context.Background()); err != nil {
+		t.Fatalf("refreshing immutable demo snapshot failed: %v", err)
+	}
+}
+
+func waitForIdle(t *testing.T, svc *TourTrackService) {
+	t.Helper()
+	svc.mu.Lock()
+	job := svc.inflight
+	svc.mu.Unlock()
+	if job == nil {
+		return
+	}
+	select {
+	case <-job.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background refresh did not finish")
 	}
 }
 
@@ -218,12 +401,17 @@ func snapshotServer(t *testing.T, requests *atomic.Int32, fail *atomic.Bool) *ht
 			http.NotFound(w, r)
 			return
 		}
-		body, err := os.ReadFile(filepath.Join("..", "api", "data", endpoint+".json"))
-		if err != nil {
-			t.Error(err)
-			http.Error(w, "fixture unavailable", http.StatusInternalServerError)
-			return
-		}
-		_, _ = w.Write(body)
+		writeFixture(t, w, r)
 	}))
+}
+
+func writeFixture(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "api", "data", strings.TrimPrefix(r.URL.Path, "/")+".json"))
+	if err != nil {
+		t.Error(err)
+		http.Error(w, "fixture unavailable", http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write(body)
 }

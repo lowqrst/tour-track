@@ -153,12 +153,57 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		h.writeJSON(w, http.StatusForbidden, "error", "Refresh the directory from the Tour Track website.")
 		return
 	}
-	if err := h.svc.Refresh(r.Context()); err != nil {
-		log.Printf("refresh artists: %v", err)
-		h.writeJSON(w, http.StatusBadGateway, "error", "The API could not be refreshed. Any previously loaded data is still available.")
+	if err := r.Context().Err(); err != nil {
 		return
 	}
-	h.writeJSON(w, http.StatusOK, "ok", "Artist directory refreshed.")
+	status := h.svc.StartRefresh()
+	code := http.StatusOK
+	if status.Refreshing {
+		code = http.StatusAccepted
+		w.Header().Set("Location", "/api/refresh/status")
+	}
+	h.writeRefreshStatus(w, code, status)
+}
+
+// RefreshStatus lets the browser observe a background job without holding its
+// initiating request open. The job continues if that visitor leaves the page.
+func (h *Handler) RefreshStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		h.writeJSON(w, http.StatusMethodNotAllowed, "error", "Use GET to check refresh progress.")
+		return
+	}
+	h.writeRefreshStatus(w, http.StatusOK, h.svc.Status())
+}
+
+func (h *Handler) writeRefreshStatus(w http.ResponseWriter, code int, data service.DataStatus) {
+	status, message := "ok", "Artist directory refreshed."
+	switch {
+	case data.Refreshing:
+		status, message = "running", "Refreshing artist data in the background."
+	case data.LastError != "":
+		status, message = "error", data.LastError
+	case data.Source == "demo":
+		message = "Offline snapshot is ready. Live updates are disabled in demo mode."
+	case data.UpdatedAt.IsZero():
+		message = "No refresh has started yet."
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(struct {
+		Status    string `json:"status"`
+		Message   string `json:"message"`
+		Stale     bool   `json:"stale"`
+		UpdatedAt string `json:"updated_at,omitempty"`
+	}{Status: status, Message: message, Stale: data.Stale, UpdatedAt: formatUpdatedAt(data)})
+}
+
+func formatUpdatedAt(status service.DataStatus) string {
+	if status.UpdatedAt.IsZero() {
+		return ""
+	}
+	return status.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
 }
 
 func (h *Handler) sourceData() sourceViewData {

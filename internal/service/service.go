@@ -41,22 +41,32 @@ type FilterOptions struct {
 
 // ArtistProfile is rebuilt at request time from the cached, unscored snapshot.
 type ArtistProfile struct {
-	Artist        models.Artist
-	Countries     []string
-	ConcertDates  []models.ConcertDate
-	ConcertEvents []ConcertEvent
-	CareerYears   int
-	CareerBonus   int
-	Score         int
-	ActivityLabel string
-	RisingStar    bool
+	Artist         models.Artist
+	Countries      []string
+	ConcertDates   []models.ConcertDate
+	ConcertEvents  []ConcertEvent
+	CareerYears    int
+	CareerBonus    int
+	RecentConcerts int
+	RecentRate     float64
+	CareerRate     float64
+	Score          int
+	ActivityLabel  string
+	RisingStar     bool
 }
 
 type DataStatus struct {
-	Source    string
-	UpdatedAt time.Time
-	Stale     bool
-	Message   string
+	Source     string
+	UpdatedAt  time.Time
+	Stale      bool
+	Message    string
+	Refreshing bool
+	LastError  string
+}
+
+type refreshJob struct {
+	done chan struct{}
+	err  error
 }
 
 // TourTrackService protects its raw snapshot and refresh state with one mutex.
@@ -67,6 +77,7 @@ type TourTrackService struct {
 	snapshot    models.APIResponse
 	status      DataStatus
 	nextAttempt time.Time
+	inflight    *refreshJob
 }
 
 func NewTourTrackService(baseURL string) *TourTrackService {
@@ -93,25 +104,30 @@ func (s *TourTrackService) Load() ([]ArtistProfile, error) {
 }
 
 func (s *TourTrackService) LoadContext(ctx context.Context) ([]ArtistProfile, error) {
-	s.mu.Lock()
 	if err := ctx.Err(); err != nil {
-		s.mu.Unlock()
 		return nil, err
 	}
+	s.mu.Lock()
 	now := time.Now()
 	if s.status.Source != "demo" && (len(s.snapshot.Artists) == 0 || now.Sub(s.status.UpdatedAt) >= cacheLifetime) && !now.Before(s.nextAttempt) {
-		if err := s.refreshLocked(ctx); err != nil && len(s.snapshot.Artists) == 0 {
-			s.mu.Unlock()
-			return nil, err
-		}
-	}
-	if len(s.snapshot.Artists) == 0 {
-		// No snapshot exists after a recent failed load; preserve backoff without
-		// pretending the empty state is a successful response.
-		s.mu.Unlock()
-		return nil, ErrUnavailable
+		s.startRefreshLocked()
 	}
 	snapshot := s.snapshot
+	job := s.inflight
+	s.mu.Unlock()
+	if len(snapshot.Artists) > 0 {
+		// Readers can keep using the immutable last good snapshot while the
+		// upstream request is running. No network operation holds the mutex.
+		return buildProfiles(snapshot, time.Now()), nil
+	}
+	if job == nil {
+		return nil, ErrUnavailable
+	}
+	if err := waitForRefresh(ctx, job); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	snapshot = s.snapshot
 	s.mu.Unlock()
 	return buildProfiles(snapshot, time.Now()), nil
 }
@@ -133,19 +149,48 @@ func (s *TourTrackService) ArtistContext(ctx context.Context, id string) (Artist
 }
 
 func (s *TourTrackService) Refresh(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	job := s.startRefreshLocked()
+	s.mu.Unlock()
+	return waitForRefresh(ctx, job)
+}
+
+// StartRefresh starts one shared background refresh, or joins the current one.
+// The returned status is captured before the worker can complete, so a newly
+// accepted live refresh always reports Refreshing. Demo snapshots are immutable.
+func (s *TourTrackService) StartRefresh() DataStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.startRefreshLocked()
+	return s.status
+}
+
+func (s *TourTrackService) startRefreshLocked() *refreshJob {
 	if s.status.Source == "demo" {
 		return nil
 	}
-	return s.refreshLocked(ctx)
+	if s.inflight != nil {
+		return s.inflight
+	}
+	job := &refreshJob{done: make(chan struct{})}
+	s.inflight = job
+	s.status.Refreshing = true
+	s.status.LastError = ""
+	s.status.Stale = len(s.snapshot.Artists) > 0 && time.Since(s.status.UpdatedAt) >= cacheLifetime
+	s.status.Message = ""
+	go s.runRefresh(job)
+	return job
 }
 
-func (s *TourTrackService) refreshLocked(ctx context.Context) error {
-	snapshot, err := s.client.FetchAllContext(ctx)
+func (s *TourTrackService) runRefresh(job *refreshJob) {
+	// A visitor leaving must not cancel a shared refresh or mark the API down
+	// for everyone else. FetchAllContext applies its own bounded timeout.
+	snapshot, err := s.client.FetchAllContext(context.Background())
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err != nil {
 		s.nextAttempt = time.Now().Add(retryDelay)
 		s.status.Stale = len(s.snapshot.Artists) > 0
@@ -153,12 +198,28 @@ func (s *TourTrackService) refreshLocked(ctx context.Context) error {
 		if s.status.Stale {
 			s.status.Message = "The API is unavailable. Showing the last successfully loaded data."
 		}
-		return err
+		s.status.LastError = s.status.Message
+		s.status.Refreshing = false
+	} else {
+		s.snapshot = snapshot
+		s.status = DataStatus{Source: "live", UpdatedAt: time.Now()}
+		s.nextAttempt = time.Time{}
 	}
-	s.snapshot = snapshot
-	s.status = DataStatus{Source: "live", UpdatedAt: time.Now()}
-	s.nextAttempt = time.Time{}
-	return nil
+	job.err = err
+	s.inflight = nil
+	close(job.done)
+}
+
+func waitForRefresh(ctx context.Context, job *refreshJob) error {
+	if job == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-job.done:
+		return job.err
+	}
 }
 
 func (s *TourTrackService) Status() DataStatus {
@@ -199,13 +260,19 @@ func buildProfiles(snapshot models.APIResponse, now time.Time) []ArtistProfile {
 		sort.Strings(countryList)
 		concertDates := append([]models.ConcertDate(nil), dates[artist.ID]...)
 		careerYears := max(0, now.Year()-artist.StartYear)
+		recentConcerts := countRecentConcerts(concertDates, now)
+		careerRate := 0.0
+		if careerYears > 0 {
+			careerRate = float64(len(concertDates)) / float64(careerYears)
+		}
 		profiles = append(profiles, ArtistProfile{
 			Artist: artist, Countries: countryList, ConcertDates: concertDates,
 			ConcertEvents: makeEvents(relations[artist.ID], now),
 			CareerYears:   careerYears, CareerBonus: min(10, careerYears/5),
+			RecentConcerts: recentConcerts, RecentRate: float64(recentConcerts) / 2, CareerRate: careerRate,
 			Score:         activity.CalculateScore(len(countryList), len(concertDates), careerYears),
 			ActivityLabel: activity.ClassifyActivity(len(countryList), len(concertDates), careerYears),
-			RisingStar:    activity.IsRisingStar(countRecentConcerts(concertDates, now), len(concertDates), careerYears),
+			RisingStar:    activity.IsRisingStar(recentConcerts, len(concertDates), careerYears),
 		})
 	}
 	sort.Slice(profiles, func(i, j int) bool { return profileLess(profiles[i], profiles[j]) })

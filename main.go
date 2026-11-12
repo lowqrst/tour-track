@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -48,9 +49,9 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	addr := os.Getenv("TOUR_TRACK_ADDR")
-	if addr == "" {
-		addr = ":8080"
+	addr, err := listenAddress()
+	if err != nil {
+		return err
 	}
 	server := &http.Server{
 		Addr: addr, Handler: handler,
@@ -96,15 +97,42 @@ func newApplication(svc *service.TourTrackService) (http.Handler, error) {
 		return nil, fmt.Errorf("load static files: %w", err)
 	}
 	mux := http.NewServeMux()
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFiles)))
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/static/", readOnly(http.StripPrefix("/static/", http.FileServerFS(staticFiles))))
+	mux.Handle("/health", readOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
-	})
+	})))
+	mux.HandleFunc("/api/refresh/status", h.RefreshStatus)
 	mux.HandleFunc("/api/refresh", h.Refresh)
 	mux.HandleFunc("/artist/", h.Artist)
 	mux.HandleFunc("/", h.Index)
 	return recoverMiddleware(mux), nil
+}
+
+// Hosting platforms commonly provide PORT; an explicit bind address takes priority.
+func listenAddress() (string, error) {
+	if addr := os.Getenv("TOUR_TRACK_ADDR"); addr != "" {
+		return addr, nil
+	}
+	if port := os.Getenv("PORT"); port != "" {
+		number, err := strconv.Atoi(port)
+		if err != nil || number < 1 || number > 65535 {
+			return "", errors.New("PORT must be an integer between 1 and 65535")
+		}
+		return ":" + strconv.Itoa(number), nil
+	}
+	return ":8080", nil
+}
+
+func readOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func recoverMiddleware(next http.Handler) http.Handler {
