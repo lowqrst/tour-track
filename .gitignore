@@ -1,5 +1,4 @@
 .cache/
-tour-track.exe
 tour-track
 *.test
 *.out

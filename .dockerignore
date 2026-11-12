@@ -12,8 +12,6 @@
 **/*.pfx
 node_modules
 tour-track
-tour-track.exe
-*.exe
 *.test
 coverage.out
 coverage.html
