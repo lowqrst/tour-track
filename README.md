@@ -1,121 +1,198 @@
 # Tour Track
 
-Каталог музыкальных исполнителей с концертной географией и объяснимой оценкой активности. Backend написан на Go, интерфейс — на HTML, CSS и небольшом JavaScript. Сторонних Go-модулей, AI-сервисов и ключей нет.
+A fast, accessible music artist catalog featuring concert geography, searchable artist data, and an explainable activity score.
 
-## Запуск
+Built with Go on the backend and a server-rendered HTML interface, Tour Track turns the four Groupie Trackers datasets into an interactive view of artists, locations, concerts, and career activity.
 
-Проект рассчитан на Linux и macOS. Требуется Go 1.22 или новее. Все команды ниже выполняются в Bash из корня проекта.
+[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+## Preview
+
+- Responsive artist cards, list, and table views
+- Dedicated artist profile pages
+- Search by artist, member, and concert location
+- Filters for country, founding year, member, and activity level
+- Rising Star, location, and concert timeline insights
+- Offline demo snapshot for reliable testing and demonstrations
+
+## Quick Start
+
+**Requirements:**
+
+- Linux or macOS
+- Go 1.22 or newer
+- Bash
+
+From the project root:
 
 ```bash
 go run .
 ```
 
-Открыть <http://localhost:8080>. По умолчанию приложение получает реальные данные из четырёх разделов [Groupie Trackers API](https://groupietrackers.01edu.ai/api): `artists`, `locations`, `dates`, `relation`.
+Open [http://localhost:8080](http://localhost:8080).
 
-Настройки задаются переменными окружения:
+By default, Tour Track fetches live data from the four sections of the [Groupie Trackers API](https://groupietrackers.herokuapp.com/api).
 
-- `TOUR_TRACK_ADDR` — адрес HTTP-сервера, по умолчанию `:8080`.
-- `PORT` — порт платформы хостинга; используется, если `TOUR_TRACK_ADDR` не задан.
-- `TOUR_TRACK_API_URL` — базовый URL API для разработки или тестирования.
-- `TOUR_TRACK_DEMO=1` — явный офлайн-режим с реальным снимком API от 12 ноября 2026 года из предоставленного архива. Сайт показывает предупреждение о снимке. Изображения артистов остаются внешними; при ошибке используется локальная заглушка.
+## Demo Mode
 
-Деморежим для одного запуска:
+Run the application with a bundled, immutable API snapshot captured on November 12, 2026:
 
 ```bash
 TOUR_TRACK_DEMO=1 go run .
 ```
 
-После остановки деморежима через `Ctrl+C` обычный `go run .` снова использует API. Если переменная была ранее задана через `export`, удалить её командой `unset TOUR_TRACK_DEMO`.
+Demo mode makes the app fully usable offline and is useful for reviews, screenshots, testing, and environments without API access.
 
-Шаблоны, стили и снимок встроены через `go:embed`, поэтому собранный бинарный файл работает из любой папки:
+Stop the server with `Ctrl+C`. A normal `go run .` uses the live API unless `TOUR_TRACK_DEMO=1` remains set in your shell.
+
+## Configuration
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `TOUR_TRACK_ADDR` | HTTP server listen address | `:8080` |
+| `PORT` | Hosting-platform port; used when `TOUR_TRACK_ADDR` is unset | — |
+| `TOUR_TRACK_API_URL` | API base URL for development or testing | Groupie Trackers API |
+| `TOUR_TRACK_DEMO` | Set to `1` to enable the bundled offline snapshot | Disabled |
+
+Example:
+
+```bash
+TOUR_TRACK_ADDR=127.0.0.1:8085 TOUR_TRACK_API_URL=https://example.com/api go run .
+```
+
+## Features
+
+### Discovery
+
+- Browse artists as cards, a compact list, or a sortable table.
+- Search names, band members, and concert locations.
+- Filter by country, founding year, member, and activity classification.
+- Open a dedicated profile for each artist.
+
+### Activity Classification
+
+Every artist receives one of four activity labels:
+
+- **Emerging** — score 0–10
+- **Active** — score 11–25
+- **Established** — score 26–40
+- **Legendary** — score 41+
+
+The calculation is deliberately simple and visible in the code:
+
+```text
+score = tourSpread * 2 + concertCount * 3 + min(10, careerYears / 5)
+```
+
+Where:
+
+- `tourSpread` is the number of distinct concert locations.
+- `concertCount` is the number of entries in the artist's concert dates dataset.
+- `careerYears` is the current year minus the artist's creation year.
+
+Career data is recalculated on each request, while the service cache stores raw data rather than precomputed scores.
+
+### Rising Stars
+
+Tour Track identifies accelerating concert activity over an inclusive two-year rolling window ending on the current calendar date.
+
+The activity page also presents recent concert data for additional context. Concert records may be historical; a score describes the available API sample and does not predict future popularity or touring plans.
+
+### Scoring and Data Assumptions
+
+- Career-year division uses integer division, and career contribution is capped at `10`.
+- Country is extracted from the text after the last `-` in a location. Underscores become spaces.
+- Common country aliases such as `USA`, `US`, `UK`, and `GB` are normalized.
+- Duplicate concert entries remain duplicate entries; multiple performances on the same date are preserved.
+- `RawDate` preserves the original value. A leading `*` is removed before parsing a `DD-MM-YYYY` date.
+- Invalid dates remain visible and are not silently discarded.
+
+## Refresh and Concurrency
+
+The **Refresh** control sends `POST /api/refresh`.
+
+The server starts one shared background update task and immediately returns `202 Accepted` with a status endpoint. A completion channel prevents duplicate updates, and network requests have bounded timeouts.
+
+Refresh behavior differs by mode:
+
+- Live mode replaces the cached snapshot after a successful API refresh.
+- Demo mode returns `200 OK` and explains that the immutable snapshot is in use.
+
+## Architecture
+
+```text
+.
+├── main.go                 # Server lifecycle, embedded assets, HTTP timeouts
+├── internal/
+│   ├── activity/           # Score calculation and activity classification
+│   ├── api/                # Parallel API loading and data joining
+│   ├── handlers/           # Routes, HTTP methods, filters, and rendering
+│   └── service/            # Five-minute snapshot cache and refresh coordination
+├── scripts/
+│   └── start-public.sh     # Build and start a temporary Cloudflare tunnel
+├── templates/              # Server-rendered HTML templates
+├── static/                 # Styles and browser assets
+└── data/                   # Bundled demo snapshot
+```
+
+- `internal/api` loads all four API sections concurrently using goroutines and a buffered channel.
+- Artist records are joined by `id`, not array position.
+- `internal/service` caches a consistent five-minute snapshot. A mutex protects reading and publishing state while network work happens outside it.
+- `internal/handlers` manages routes, methods, errors, and filters. `html/template` escapes API data before rendering.
+- `main.go` embeds resources, sets HTTP limits, recovers handler panics, and handles graceful shutdown on system signals.
+
+Templates, styles, static assets, and the demo snapshot are embedded with `go:embed`. The compiled binary therefore works from any directory:
 
 ```bash
 go build -o tour-track .
 ./tour-track
 ```
 
-## Возможности
+## Build with Docker
 
-- Карточки, список и таблица; отдельная страница каждого исполнителя.
-- Поиск по имени, участникам и концертным местам; фильтры страны, года основания, участника и активности; сортировка по имени, оценке, концертам, странам и году.
-- На карточке и странице артиста отображается одна из меток Emerging, Active, Established, Legendary. На странице есть вклад каждого показателя в оценку, первый альбом, состав и концертная история.
-- Кнопка Refresh вызывает `POST /api/refresh`: сервер запускает фоновую задачу и сразу возвращает `202 Accepted` с адресом проверки прогресса. Браузер опрашивает `GET /api/refresh/status` и обновляет страницу после завершения. Повторные нажатия во время загрузки используют общую задачу. Поиск и фильтры работают и без JavaScript.
-- Rising Star отмечает ускорение концертной активности за последние два года; страница артиста показывает недавний и карьерный темп с объяснением сравнения.
-- Адаптивный интерфейс, клавиатурная навигация, доступные подписи, состояния ошибок и отсутствие результатов.
-
-## Оценка активности
-
-Логика находится в `internal/activity`. Публичный `CalculateScore` вычисляет оценку отдельно от `ClassifyActivity`:
-
-```text
-score = tourSpread * 2 + concertCount * 3 + min(10, careerYears / 5)
-
-0–10: Emerging
-11–25: Active
-26–40: Established
-41+: Legendary
-```
-
-Допущения для неоднозначностей задания:
-
-- `careerYears` вычисляется при каждом запросе как `time.Now().Year() - creationDate`. Кэш хранит исходные данные, а не готовые оценки. Будущий год основания даёт нулевой стаж; отрицательные входы классификатора нормализуются до нуля.
-- Деление стажа на 5 целочисленное; вклад стажа ограничен 10.
-- Страна берётся после последнего `-` в строке локации; `_` заменяется пробелом. Общие псевдонимы (`usa`/`us`, `uk` и другие) нормализуются. Несколько городов одной страны считаются одной страной.
-- `concertCount` равен числу записей в разделе `dates` для артиста. Повторные записи сохраняются: в один день могут быть разные выступления. `relation` используется для маршрута и не прибавляется к счётчику.
-- Исходная дата сохраняется в `RawDate`; начальная `*` удаляется перед разбором `DD-MM-YYYY`. Неверная дата остаётся записью источника, но исключается из Rising Star.
-- Rising Star использует включительный скользящий интервал от сегодняшней календарной даты минус два года до сегодня; будущие даты исключаются. Средний темп равен `recentConcerts / 2`; сравнение строго `> 1.5 * totalConcerts / careerYears`. При нулевом стаже или отсутствии концертов метка не выставляется.
-- Концертные данные могут быть историческими. Оценка характеризует представленную выборку API и не подтверждает, что артист выступает сейчас.
-
-## Надёжность и структура
-
-`internal/api` загружает все четыре раздела параллельно через goroutines и buffered channel. Записи связываются по `id`, а не порядку массива. Проверяются HTTP-статусы, JSON, полнота ID и размер ответа. У запросов есть таймаут и отмена.
-
-`internal/service` кэширует согласованный снимок на пять минут. Mutex защищает только чтение и публикацию состояния; сетевые запросы выполняются вне блокировки. Пока идёт обновление, готовый кэш сразу доступен страницам. При истечении срока он обновляется в фоне.
-
-Обновление — одна общая goroutine с каналом завершения и ограниченным сетевым таймаутом. Отмена запроса посетителя прекращает только его ожидание. Общая загрузка продолжается; клиентская отмена не объявляет API недоступным. После настоящего сбоя сохраняется последний успешный снимок с предупреждением; автоматические повторы ограничены интервалом 30 секунд. Если данных ещё нет и загрузка не удалась, страницы возвращают 503. Демоданные не подменяют неудачную загрузку API автоматически.
-
-`internal/handlers` обрабатывает маршруты, ошибки, методы HTTP и фильтры. `html/template` экранирует данные API. Страница сначала рендерится в буфер, чтобы ошибка шаблона не отправила частичный успешный ответ.
-
-`main.go` встраивает ресурсы, задаёт HTTP-таймауты, перехватывает панику обработчика и завершает сервер по сигналу, дожидаясь активных запросов. `/health` проверяет работу сервера независимо от API.
-
-В деморежиме обновление возвращает `200` и пояснение, что используется неизменяемый снимок. Статус фоновой задачи — `running`, `ok` или `error`; отказ API не маскируется под успех. Неподдерживаемые методы известных маршрутов получают `405` с заголовком `Allow`.
-
-Ограничение вычислений в пять минут из общих good practices применяется к ограниченным операциям; постоянно работающий HTTP-сервер намеренно не выключается по таймеру.
-
-## Бонусы и публичная ссылка
-
-Реализованы Rising Star и асинхронное обновление с goroutines/channels. Для временного публичного DNS используется [Cloudflare Quick Tunnel](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
-
-Для публикации нужны `curl` и установленный `cloudflared`; инструкции доступны в документации Cloudflare по ссылке выше. Скрипт совместим с Bash 3.2 и новее, включая стандартный Bash macOS.
-
-Запустить сервер и туннель одной командой:
-
-```bash
-bash scripts/start-public.sh
-```
-
-Скрипт собирает Go-сервер, запускает его на `127.0.0.1:8080`, дожидается готовности и создаёт туннель. Логи сервера находятся в `.cache/public/server.log`. Он останавливает только собственные процессы; занятый порт не перехватывает.
-
-Чтобы выбрать другой порт:
-
-```bash
-bash scripts/start-public.sh 8085
-```
-
-Cloudflare напечатает публичный HTTPS-адрес `https://…trycloudflare.com`. Аккаунт Cloudflare не требуется.
-
-Держать терминал открытым. `Ctrl+C` завершает туннель и сервер. Ссылка доступна любому, кто её знает; после остановки туннеля она перестаёт работать, а при следующем запуске меняется. Это временная публикация для демонстрации и аудита, без гарантии доступности; компьютер должен оставаться включённым.
-
-Для постоянного размещения подготовлен `Dockerfile`: многоэтапная сборка, статический Go-бинарник, TLS-сертификаты и запуск от непривилегированного пользователя. При работающем Docker Engine:
+The Dockerfile uses a multi-stage build and produces a small static Go binary:
 
 ```bash
 docker build -t tour-track .
 docker run --rm -p 8080:8080 tour-track
 ```
 
-Go-сервер остаётся backend приложения при обоих вариантах публикации. Публичная ссылка не записывается в исходники, поскольку она временная.
+Open [http://localhost:8080](http://localhost:8080).
 
-## Проверки
+## Temporary Public URL
+
+Publish a local server through a temporary Cloudflare Tunnel:
+
+```bash
+bash scripts/start-public.sh
+```
+
+The script:
+
+1. Builds the Go server.
+2. Starts it on `127.0.0.1:8080`.
+3. Waits for readiness.
+4. Starts `cloudflared` and prints a public HTTPS URL.
+
+To use another port:
+
+```bash
+bash scripts/start-public.sh 8085
+```
+
+Requirements:
+
+- `curl`
+- `cloudflared`
+
+Cloudflare prints an address such as `https://random-name.trycloudflare.com`. No Cloudflare account is required.
+
+Keep the terminal open. `Ctrl+C` stops both the tunnel and the server. Anyone with the temporary URL can access the site until the process stops or the tunnel expires.
+
+## Testing
+
+Run the standard Go checks:
 
 ```bash
 go test ./...
@@ -123,12 +200,24 @@ go vet ./...
 go build ./...
 ```
 
-Для систем с настроенным C-компилятором: `go test -race ./...`.
+For systems with a configured C compiler:
 
-Если стандартный каталог кэша Go недоступен, разместить кэш сборки внутри проекта:
+```bash
+go test -race ./...
+```
+
+Tests use `httptest`, a local snapshot, and fixed time values where date calculations are involved.
+
+If the standard Go cache directory is unavailable, keep build cache data inside the project:
 
 ```bash
 GOCACHE="$(pwd)/.cache/go-build" go test ./...
 ```
 
-Тесты используют `httptest`, локальный снимок и фиксированное время там, где проверяются даты. Для запуска тестов интернет не нужен. Проверяются границы меток и стажа, Rising Star, формат API, сопоставление ID, сбои и отмена запросов, кэш, параллельные обращения, поиск и страницы всех 52 исполнителей.
+## Contributing
+
+Contributions are welcome. Please keep changes focused, preserve the project's Go style, and add tests for behavior that is not covered.
+
+## License
+
+Add a `LICENSE` file to make the project’s license explicit. Until a license is present, no permissions beyond those permitted by default on GitHub are granted to reuse or distribute the code.
